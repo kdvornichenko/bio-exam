@@ -15,7 +15,6 @@ export const breadcrumbConfig = {
 		projects: 'Проекты',
 		dashboard: 'Дашборд',
 		workload: 'Нагрузка',
-		employees: 'Сотрудники',
 		users: 'Пользователи',
 	} as Record<string, string>,
 }

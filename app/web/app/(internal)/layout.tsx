@@ -18,10 +18,8 @@ import { Providers } from '../providers'
 
 export default async function RootLayout({
 	children,
-	docsSidebar,
 }: Readonly<{
 	children: React.ReactNode
-	docsSidebar: React.ReactNode
 }>) {
 	const me = await getServerMe()
 

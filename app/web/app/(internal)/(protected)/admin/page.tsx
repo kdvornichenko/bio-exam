@@ -15,10 +15,6 @@ export default function AdminPage() {
 			href: '/admin/settings',
 			name: 'STNG.',
 		},
-		{
-			href: '/employees',
-			name: 'EMPL.',
-		},
 	]
 
 	return <Tiles items={adminItems} />
