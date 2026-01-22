@@ -1,7 +1,7 @@
 {
 	"version": 2,
 	"installCommand": "corepack enable && cd ../.. && yarn install",
-	"buildCommand": "bash vercel-build.sh",
+	"buildCommand": "node vercel-build.js",
 	"rewrites": [
 		{
 			"source": "/(.*)",

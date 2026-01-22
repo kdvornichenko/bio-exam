@@ -1,8 +1,7 @@
-node_modules
 src
 .env
-.env.*
+.env.local
 *.log
 .DS_Store
-drizzle
 drizzle.config.ts
+vercel-build.sh
