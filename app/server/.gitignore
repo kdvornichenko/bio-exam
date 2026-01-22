@@ -41,6 +41,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# --- Vercel ---
+.vercel
+
 # --- Package managers (workspace использует корневой lock) ---
 package-lock.json
 
