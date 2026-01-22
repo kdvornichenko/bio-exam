@@ -13,11 +13,7 @@ export function makeSearchValue(...parts: (string | undefined)[]): string {
  * Разбивает запрос на токены (группы слов)
  */
 export function makeQueryGroups(query: string): string[] {
-	return query
-		.trim()
-		.toLowerCase()
-		.split(/\s+/)
-		.filter(Boolean)
+	return query.trim().toLowerCase().split(/\s+/).filter(Boolean)
 }
 
 /**

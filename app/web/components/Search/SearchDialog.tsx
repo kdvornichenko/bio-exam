@@ -1,7 +1,9 @@
 'use client'
 
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
+
 import { useEffect, useMemo, useRef, useState } from 'react'
+
 import { AnimatePresence, motion, useMotionValue, useSpring, useTransform } from 'motion/react'
 import { useRouter } from 'next/navigation'
 
@@ -12,8 +14,8 @@ import { searchTopics, searchFiles, searchUsers } from '@/lib/search/api'
 import type { TopicResult, FileResult, UserResult } from '@/types/search'
 
 import { useSearch } from './SearchProvider'
-import { SearchResultsTopics } from './SearchResultsTopics'
 import { SearchResultsFiles } from './SearchResultsFiles'
+import { SearchResultsTopics } from './SearchResultsTopics'
 import { SearchResultsUsers } from './SearchResultsUsers'
 
 export default function SearchDialog() {
@@ -195,12 +197,13 @@ export default function SearchDialog() {
 					{/* Вьюпорт результатов */}
 					<CommandList className="min-h-75">
 						{!loading && !hasResults && query.trim().length >= 2 && (
-							<CommandEmpty>Ничего не найдено в разделе &quot;{tab === 'topics' ? 'Темы' : tab === 'files' ? 'Файлы' : 'Пользователи'}&quot;</CommandEmpty>
+							<CommandEmpty>
+								Ничего не найдено в разделе &quot;
+								{tab === 'topics' ? 'Темы' : tab === 'files' ? 'Файлы' : 'Пользователи'}&quot;
+							</CommandEmpty>
 						)}
 
-						{query.trim().length < 2 && (
-							<CommandEmpty>Введите минимум 2 символа для поиска</CommandEmpty>
-						)}
+						{query.trim().length < 2 && <CommandEmpty>Введите минимум 2 символа для поиска</CommandEmpty>}
 
 						<div className="relative h-full">
 							<AnimatePresence initial={false} mode="wait">

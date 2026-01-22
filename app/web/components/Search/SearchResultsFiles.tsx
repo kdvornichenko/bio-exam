@@ -28,7 +28,10 @@ export function SearchResultsFiles({ files, onSelect }: Props) {
 					<FileTextIcon className="size-4" />
 					<div className="ml-2 min-w-0">
 						<div className="truncate">{file.title}</div>
-						<div className="text-muted-foreground line-clamp-2 text-xs" dangerouslySetInnerHTML={{ __html: file.snippet }} />
+						<div
+							className="text-muted-foreground line-clamp-2 text-xs"
+							dangerouslySetInnerHTML={{ __html: file.snippet }}
+						/>
 					</div>
 				</CommandItem>
 			))}
