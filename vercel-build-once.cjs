@@ -36,6 +36,10 @@ try {
 	try {
 		execSync('cp -rv app/server/dist/* dist/', { stdio: 'inherit' })
 		console.log('Artifacts copied to root dist successfully!')
+
+		// Создаем package.json в dist, чтобы Node.js знал, что это ESM модули
+		fs.writeFileSync('dist/package.json', JSON.stringify({ type: 'module' }, null, 2))
+		console.log('dist/package.json created.')
 	} catch (cpError) {
 		console.error('Failed to copy artifacts to root dist:', cpError.message)
 		// Не выходим с ошибкой, если это локальный запуск на Windows,
