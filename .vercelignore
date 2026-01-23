@@ -1,4 +1,4 @@
-# Exclude web app (only deploying server)
+# Exclude web app (deploying in separate project)
 app/web
 
 # Exclude docs
