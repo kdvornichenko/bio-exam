@@ -1,6 +1,20 @@
 {
-	"buildCommand": "yarn build",
-	"outputDirectory": "dist",
-	"installCommand": "yarn install",
-	"framework": null
+	"installCommand": "cd ../.. && corepack enable && yarn install",
+	"buildCommand": "cd ../.. && yarn build:rbac && cd app/server && yarn build",
+	"rewrites": [
+		{
+			"source": "/api/(.*)",
+			"destination": "/api/index.ts"
+		},
+		{
+			"source": "/healthz",
+			"destination": "/api/index.ts"
+		}
+	],
+	"functions": {
+		"api/index.ts": {
+			"maxDuration": 30,
+			"memory": 1024
+		}
+	}
 }
