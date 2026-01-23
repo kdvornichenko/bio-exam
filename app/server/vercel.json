@@ -1,6 +1,6 @@
 {
-	"installCommand": "cd ../.. && corepack enable && yarn install",
-	"buildCommand": "cd ../.. && yarn build:rbac && cd app/server && yarn build",
+	"installCommand": "corepack enable && yarn --cwd ../.. install",
+	"buildCommand": "yarn --cwd ../.. workspace @bio-exam/rbac build && yarn --cwd ../.. workspace @bio-exam/server build",
 	"rewrites": [
 		{
 			"source": "/api/(.*)",
