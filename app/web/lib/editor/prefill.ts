@@ -11,7 +11,7 @@ export type EditorPrefill = {
 	frontmatter?: EditorPrefillFrontmatter
 }
 
-const keyFor = (slug: string) => `its-doc:editor:prefill:${slug}`
+const keyFor = (slug: string) => `bio-exam:editor:prefill:${slug}`
 
 export function setEditorPrefill(slug: string, prefill: EditorPrefill): void {
 	if (typeof window === 'undefined') return

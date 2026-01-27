@@ -3,7 +3,7 @@
 import { type LucideIcon } from 'lucide-react'
 import Link from 'next/link'
 
-import { SidebarGroup, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar'
+import { SidebarGroup, SidebarMenu, SidebarMenuItem } from '@/components/ui/sidebar'
 
 export function NavLinks({
 	links,
@@ -20,12 +20,14 @@ export function NavLinks({
 			<SidebarMenu>
 				{links.map((item) => (
 					<SidebarMenuItem key={item.name}>
-						<SidebarMenuButton asChild>
-							<Link href={item.url} target={item.target}>
-								<item.icon />
-								<span>{item.name}</span>
-							</Link>
-						</SidebarMenuButton>
+						<Link
+							className="text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-ring/15 flex flex-col items-center justify-center gap-2 rounded-xl py-3 transition-colors"
+							href={item.url}
+							target={item.target}
+						>
+							<item.icon />
+							<span className="text-center text-xs font-medium leading-tight">{item.name}</span>
+						</Link>
 					</SidebarMenuItem>
 				))}
 			</SidebarMenu>

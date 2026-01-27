@@ -14,7 +14,7 @@ type TilesProps = {
 
 const Tiles: FC<TilesProps> = ({ items }) => {
 	return (
-		<div className="gap-unit-mob tab:gap-unit grid h-full [grid-template-columns:repeat(auto-fill,minmax(0,400px))] [grid-template-rows:repeat(auto-fill,minmax(0,200px))]">
+		<div className="gap-unit-mob tab:gap-unit grid h-full grid-cols-[repeat(auto-fill,minmax(0,400px))] grid-rows-[repeat(auto-fill,minmax(0,200px))]">
 			{items.map((item, index) => (
 				<Link
 					href={item.href as Route}

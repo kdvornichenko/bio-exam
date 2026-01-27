@@ -39,7 +39,7 @@ export function TeamSwitcher({
 							className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
 						>
 							<div className="grid flex-1 text-left text-sm leading-tight">
-								<span className="truncate font-semibold">ITS.{activeTeam.name}</span>
+								<span className="truncate font-semibold">bio-exam</span>
 							</div>
 							<ChevronsUpDown className="ml-auto" />
 						</SidebarMenuButton>

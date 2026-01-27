@@ -4,15 +4,11 @@ import { ComponentProps, useEffect, useState } from 'react'
 
 import * as Icons from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import Link from 'next/link'
 
 import { NavLinks } from '@/components/nav-links'
-import { NavUser } from '@/components/nav-user'
-import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarRail, useSidebar } from '@/components/ui/sidebar'
+import { Sidebar, SidebarContent, SidebarHeader } from '@/components/ui/sidebar'
 
 import LogoSidebar from './LogoSidebar'
-import AuthGuard from './auth/AuthGuard'
-import { Button } from './ui/button'
 
 interface SidebarItem {
 	id: string
@@ -33,8 +29,6 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 			target?: HTMLAnchorElement['target']
 		}[]
 	>([])
-
-	const { toggleSidebar } = useSidebar()
 
 	useEffect(() => {
 		fetch('/api/sidebar')
@@ -61,31 +55,25 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 	}, [])
 
 	return (
-		<Sidebar collapsible="icon" suppressHydrationWarning {...props}>
+		<Sidebar collapsible="none" suppressHydrationWarning {...props}>
 			<SidebarHeader className="px-4 pt-4 text-2xl font-semibold">
 				<div className="flex items-center justify-between transition">
-					<div
-						onClick={toggleSidebar}
-						className="size-9 shrink-0 origin-left cursor-pointer transition-[width,height,margin] group-data-[collapsible=icon]:-ml-1 group-data-[collapsible=icon]:size-6"
-					>
-						<LogoSidebar className="size-full" />
-					</div>
-					<AuthGuard requireAny={['settings.manage']}>
+					<LogoSidebar />
+					{/* <AuthGuard requireAny={['settings.manage']}>
 						<Link href="/admin/sidebar" className="transition group-data-[collapsible=icon]:opacity-0">
 							<Button variant="outline" size="icon">
 								<Icons.SettingsIcon size="4" />
 							</Button>
 						</Link>
-					</AuthGuard>
+					</AuthGuard> */}
 				</div>
 			</SidebarHeader>
-			<SidebarContent>
+			<SidebarContent className="mt-16">
 				<NavLinks links={links} />
 			</SidebarContent>
-			<SidebarFooter>
+			{/* <SidebarFooter>
 				<NavUser />
-			</SidebarFooter>
-			<SidebarRail />
+			</SidebarFooter> */}
 		</Sidebar>
 	)
 }

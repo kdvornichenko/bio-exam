@@ -1,6 +1,7 @@
 import clsx from 'clsx'
 import type { Metadata, Viewport } from 'next'
 
+import AppLayout from '@/components/AppLayout/AppLayout'
 import { Toaster } from '@/components/ui/sonner'
 import { fontSans } from '@/config/fonts'
 import { siteConfig } from '@/config/site'
@@ -35,9 +36,15 @@ export default async function RootLayout({
 	children: React.ReactNode
 }>) {
 	return (
-		<html suppressHydrationWarning data-scroll-behavior="smooth" lang="ru" style={{ overflow: 'hidden' }}>
-			<body className={clsx('font-sans antialiased', fontSans.variable)}>
-				{children}
+		<html
+			suppressHydrationWarning
+			data-scroll-behavior="smooth"
+			lang="ru"
+			data-theme="light"
+			style={{ overflow: 'hidden' }}
+		>
+			<body className={clsx('bg-background font-sans antialiased', fontSans.variable)}>
+				<AppLayout>{children}</AppLayout>
 				<Toaster />
 			</body>
 		</html>

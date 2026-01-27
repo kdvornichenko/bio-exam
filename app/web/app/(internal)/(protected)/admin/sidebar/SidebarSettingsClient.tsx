@@ -474,7 +474,7 @@ export function SidebarSettingsClient() {
 							)}
 						</div>
 
-						<ScrollArea className="h-[400px]">
+						<ScrollArea className="h-100">
 							{filteredIcons.length === 0 ? (
 								<div className="text-muted-foreground p-8 text-center text-sm">
 									{iconSearch.trim().length < 2 ? 'Введите минимум 2 символа для поиска' : 'Иконки не найдены'}
