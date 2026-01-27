@@ -245,7 +245,7 @@ export default function TestsClient() {
 
 	return (
 		<div className="space-y-6">
-			<div className="flex items-center justify-between">
+			<div className="tab-sm:flex-row tab-sm:justify-between tab-sm:items-center flex flex-col gap-4">
 				<div>
 					<h1 className="text-2xl font-semibold">Управление тестами</h1>
 					<p className="text-muted-foreground">Создание и редактирование тестов</p>
@@ -340,7 +340,7 @@ export default function TestsClient() {
 					) : (
 						filteredTests.map((test) => (
 							<Card key={test.id} className="hover:bg-accent/50 transition-colors">
-								<CardContent className="flex items-center justify-between p-4">
+								<CardContent className="tab-sm:items-center tab-sm:flex-row tab-sm:justify-between flex flex-col gap-2 p-4">
 									<div className="flex-1">
 										<div className="flex items-center gap-2">
 											<h3 className="font-medium">{test.title}</h3>
@@ -357,7 +357,7 @@ export default function TestsClient() {
 											{test.timeLimitMinutes && ` • ${test.timeLimitMinutes} мин`}
 										</p>
 									</div>
-									<div className="flex items-center gap-2">
+									<div className="max-tab-sm:justify-between flex w-full items-center gap-2">
 										<Button variant="outline" size="sm" onClick={() => router.push(`/admin/tests/${test.id}`)}>
 											<Edit className="mr-2 h-4 w-4" />
 											Редактировать
