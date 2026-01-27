@@ -1,3 +1,4 @@
+import { relations } from 'drizzle-orm'
 import {
 	pgTable,
 	pgEnum,
@@ -12,6 +13,7 @@ import {
 	boolean,
 	index,
 	real,
+	jsonb,
 } from 'drizzle-orm/pg-core'
 
 /** Тип открытия ссылки */
@@ -165,3 +167,150 @@ export const sidebarItems = pgTable(
 		orderIdx: index('sidebar_items_order_idx').on(t.order),
 	})
 )
+
+// =============================================================================
+// ТЕСТЫ
+// =============================================================================
+
+/** Тип вопроса */
+export const questionType = pgEnum('question_type', ['radio', 'checkbox', 'matching'])
+
+/** Темы тестов */
+export const topics = pgTable(
+	'topics',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		slug: text('slug').notNull(),
+		title: text('title').notNull(),
+		description: text('description'),
+		order: integer('order').notNull().default(0),
+		isActive: boolean('is_active').notNull().default(true),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+		updatedAt: timestamp('updated_at').notNull().defaultNow(),
+		createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+	},
+	(t) => ({
+		slugUniq: uniqueIndex('topics_slug_uniq').on(t.slug),
+		orderIdx: index('topics_order_idx').on(t.order),
+	})
+)
+
+/** Тесты */
+export const tests = pgTable(
+	'tests',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		topicId: uuid('topic_id')
+			.notNull()
+			.references(() => topics.id, { onDelete: 'cascade' }),
+		slug: text('slug').notNull(),
+		title: text('title').notNull(),
+		description: text('description'),
+		version: integer('version').notNull().default(1),
+		isPublished: boolean('is_published').notNull().default(false),
+		timeLimitMinutes: integer('time_limit_minutes'),
+		passingScore: real('passing_score'),
+		order: integer('order').notNull().default(0),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+		updatedAt: timestamp('updated_at').notNull().defaultNow(),
+		createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+		updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+	},
+	(t) => ({
+		topicSlugUniq: uniqueIndex('tests_topic_slug_uniq').on(t.topicId, t.slug),
+		orderIdx: index('tests_order_idx').on(t.order),
+	})
+)
+
+/** Вопросы теста */
+export const questions = pgTable(
+	'questions',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		testId: uuid('test_id')
+			.notNull()
+			.references(() => tests.id, { onDelete: 'cascade' }),
+		type: questionType('type').notNull(),
+		order: integer('order').notNull().default(0),
+		points: real('points').notNull().default(1),
+		options: jsonb('options'), // для radio/checkbox: [{id, text}]
+		matchingPairs: jsonb('matching_pairs'), // для matching: {left: [], right: []}
+		promptPath: text('prompt_path'), // путь к prompt.md в Storage
+		explanationPath: text('explanation_path'), // путь к explanation.md в Storage
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+		updatedAt: timestamp('updated_at').notNull().defaultNow(),
+	},
+	(t) => ({
+		testIdIdx: index('questions_test_id_idx').on(t.testId),
+		orderIdx: index('questions_order_idx').on(t.order),
+	})
+)
+
+/** Ключи ответов (версионируемые) */
+export const answerKeys = pgTable(
+	'answer_keys',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		questionId: uuid('question_id')
+			.notNull()
+			.references(() => questions.id, { onDelete: 'cascade' }),
+		version: integer('version').notNull().default(1),
+		correctAnswer: jsonb('correct_answer').notNull(), // string | string[] | Record<string, string>
+		isActive: boolean('is_active').notNull().default(true),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+		createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+	},
+	(t) => ({
+		questionVersionUniq: uniqueIndex('answer_keys_question_version_uniq').on(t.questionId, t.version),
+		questionIdIdx: index('answer_keys_question_id_idx').on(t.questionId),
+	})
+)
+
+// =============================================================================
+// RELATIONS
+// =============================================================================
+
+export const topicsRelations = relations(topics, ({ one, many }) => ({
+	createdByUser: one(users, {
+		fields: [topics.createdBy],
+		references: [users.id],
+	}),
+	tests: many(tests),
+}))
+
+export const testsRelations = relations(tests, ({ one, many }) => ({
+	topic: one(topics, {
+		fields: [tests.topicId],
+		references: [topics.id],
+	}),
+	createdByUser: one(users, {
+		fields: [tests.createdBy],
+		references: [users.id],
+		relationName: 'createdByUser',
+	}),
+	updatedByUser: one(users, {
+		fields: [tests.updatedBy],
+		references: [users.id],
+		relationName: 'updatedByUser',
+	}),
+	questions: many(questions),
+}))
+
+export const questionsRelations = relations(questions, ({ one, many }) => ({
+	test: one(tests, {
+		fields: [questions.testId],
+		references: [tests.id],
+	}),
+	answerKeys: many(answerKeys),
+}))
+
+export const answerKeysRelations = relations(answerKeys, ({ one }) => ({
+	question: one(questions, {
+		fields: [answerKeys.questionId],
+		references: [questions.id],
+	}),
+	createdByUser: one(users, {
+		fields: [answerKeys.createdBy],
+		references: [users.id],
+	}),
+}))

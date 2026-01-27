@@ -21,6 +21,8 @@
 	},
 	"dependencies": {
 		"@bio-exam/rbac": "*",
+		"@supabase/supabase-js": "^2.93.1",
+		"archiver": "^7.0.1",
 		"bcryptjs": "^3.0.2",
 		"chokidar": "^4.0.3",
 		"cors": "^2.8.5",
@@ -41,6 +43,7 @@
 	},
 	"devDependencies": {
 		"@trivago/prettier-plugin-sort-imports": "^5.2.2",
+		"@types/archiver": "^7.0.0",
 		"@types/cors": "^2.8.19",
 		"@types/express": "^5.0.6",
 		"@types/jsonwebtoken": "^9.0.10",

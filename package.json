@@ -14,7 +14,7 @@
 		"build": "yarn build:rbac && concurrently \"yarn --cwd app/server build\" \"yarn --cwd app/web build\"",
 		"start": "concurrently \"yarn --cwd app/server start\" \"yarn --cwd app/web start\"",
 		"prod": "yarn build && yarn start",
-		"dev": "yarn build:rbac && concurrently \"yarn --cwd app/server dev\" \"node -e \\\"setTimeout(() => {}, 3000)\\\" && yarn --cwd app/web dev\""
+		"dev": "yarn build:rbac && concurrently \"yarn --cwd app/server dev\" \"yarn --cwd app/web dev\""
 	},
 	"devDependencies": {
 		"baseline-browser-mapping": "^2.8.32",
