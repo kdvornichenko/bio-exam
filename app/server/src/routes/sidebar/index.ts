@@ -65,7 +65,7 @@ router.post('/', sessionRequired(), requirePerm('settings', 'manage'), async (re
 // PUT /api/sidebar/:id - обновить пункт меню
 router.put('/:id', sessionRequired(), requirePerm('settings', 'manage'), async (req, res) => {
 	try {
-		const { id } = req.params
+		const id = req.params.id as string
 		const { title, url, icon, target, order, isActive } = req.body
 
 		const updateData: any = { updatedAt: new Date() }
@@ -117,7 +117,7 @@ router.patch('/reorder', sessionRequired(), requirePerm('settings', 'manage'), a
 // DELETE /api/sidebar/:id - удалить пункт меню
 router.delete('/:id', sessionRequired(), requirePerm('settings', 'manage'), async (req, res) => {
 	try {
-		const { id } = req.params
+		const id = req.params.id as string
 
 		const [deleted] = await db.delete(sidebarItems).where(eq(sidebarItems.id, id)).returning()
 

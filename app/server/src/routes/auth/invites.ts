@@ -155,7 +155,7 @@ router.post('/', sessionRequired(), requirePerm('users', 'invite'), async (req, 
 
 router.get('/validate/:token', async (req, res, next) => {
 	try {
-		const token = req.params.token
+		const token = req.params.token as string
 		if (!token || token.length < 8) {
 			return res.status(404).json({ error: 'Invalid token' })
 		}

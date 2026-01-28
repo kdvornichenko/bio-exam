@@ -119,7 +119,7 @@ router.get('/', sessionRequired(), requirePerm('users', 'read'), async (_req, re
 
 router.patch('/:id', validateUUID('id'), sessionRequired(), requirePerm('users', 'edit'), async (req, res, next) => {
 	try {
-		const id = req.params.id
+		const id = req.params.id as string
 		const parsed = PatchUserSchema.safeParse(req.body)
 		if (!parsed.success) {
 			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
@@ -172,7 +172,7 @@ router.patch('/:id', validateUUID('id'), sessionRequired(), requirePerm('users',
 // DELETE /api/users/:id — удаление пользователя
 router.delete('/:id', validateUUID('id'), sessionRequired(), requirePerm('users', 'edit'), async (req, res, next) => {
 	try {
-		const id = req.params.id
+		const id = req.params.id as string
 
 		const existing = await db.query.users.findFirst({ where: eq(users.id, id) })
 		if (!existing) return res.status(404).json({ error: ERROR_MESSAGES.USER_NOT_FOUND })

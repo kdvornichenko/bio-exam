@@ -20,7 +20,8 @@
   "scripts": {
     "build": "rimraf dist && tsup src/index.ts --dts --format esm,cjs --out-dir dist --clean",
     "clean": "rimraf dist",
-    "watch": "tsup src/index.ts --dts --format esm,cjs --out-dir dist --watch --clean=false"
+    "watch": "tsup src/index.ts --dts --format esm,cjs --out-dir dist --watch --clean=false",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "rimraf": "^5.0.5",

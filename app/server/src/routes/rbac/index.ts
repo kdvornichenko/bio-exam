@@ -88,7 +88,7 @@ router.delete('/grant', sessionRequired(), requirePerm('rbac', 'write'), async (
 
 router.get('/user/:id/grants', validateUUID('id'), sessionRequired(), requirePerm('rbac', 'read'), async (req, res, next) => {
 	try {
-		const userId = req.params.id
+		const userId = req.params.id as string
 
 		// роли пользователя
 		const rs = await db.select({ role: userRoles.roleKey }).from(userRoles).where(eq(userRoles.userId, userId))
@@ -198,7 +198,7 @@ router.post('/pages', sessionRequired(), requirePerm('rbac', 'write'), async (re
 
 router.patch('/pages/:id', validateUUID('id'), sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
 	try {
-		const id = req.params.id
+		const id = req.params.id as string
 		const parsed = PatchPageRuleSchema.safeParse(req.body)
 		if (!parsed.success) return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
 		await db.update(rbacPageRules).set(parsed.data).where(eq(rbacPageRules.id, id))
@@ -210,7 +210,7 @@ router.patch('/pages/:id', validateUUID('id'), sessionRequired(), requirePerm('r
 
 router.delete('/pages/:id', validateUUID('id'), sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
 	try {
-		const id = req.params.id
+		const id = req.params.id as string
 		await db.delete(rbacPageRules).where(eq(rbacPageRules.id, id))
 		res.json({ ok: true })
 	} catch (e) {

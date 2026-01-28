@@ -31,6 +31,11 @@ export function validateUUID(paramName = 'id') {
 			return next()
 		}
 
+		// Express может вернуть массив для некоторых паттернов роутинга
+		if (Array.isArray(value)) {
+			throw ApiError.badRequest(`${ERROR_MESSAGES.INVALID_UUID}: ${paramName} (unexpected array)`)
+		}
+
 		if (!UUID_REGEX.test(value)) {
 			throw ApiError.badRequest(`${ERROR_MESSAGES.INVALID_UUID}: ${paramName}`)
 		}

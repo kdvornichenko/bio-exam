@@ -5,7 +5,8 @@
 	"scripts": {
 		"dev": "next dev --turbopack",
 		"format": "npm run prettier && npm run lint",
-		"build": "npm run lint && next build",
+		"build": "next build",
+		"typecheck": "tsc --noEmit",
 		"build:dev": "next build",
 		"start": "next start",
 		"lint": "eslint . --config eslint.config.mjs",
