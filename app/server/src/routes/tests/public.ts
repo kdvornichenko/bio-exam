@@ -47,7 +47,7 @@ router.get('/topics', sessionRequired(), async (_req, res, next) => {
 // GET /api/tests/public/topics/:slug/tests - список опубликованных тестов в теме
 router.get('/topics/:slug/tests', sessionRequired(), async (req, res, next) => {
 	try {
-		const { slug } = req.params
+		const { slug } = req.params as { slug: string }
 
 		const topic = await db.query.topics.findFirst({
 			where: eq(topics.slug, slug),
@@ -79,7 +79,7 @@ router.get('/topics/:slug/tests', sessionRequired(), async (req, res, next) => {
 // GET /api/tests/public/tests/:slug - получить тест и вопросы (БЕЗ ОТВЕТОВ)
 router.get('/tests/:slug', sessionRequired(), async (req, res, next) => {
 	try {
-		const { slug } = req.params
+		const { slug } = req.params as { slug: string }
 
 		const test = await db.query.tests.findFirst({
 			where: and(eq(tests.slug, slug), eq(tests.isPublished, true)),
@@ -131,7 +131,7 @@ router.get('/tests/:slug', sessionRequired(), async (req, res, next) => {
 // POST /api/tests/public/tests/:id/submit - проверить ответы и вернуть результат
 router.post('/tests/:id/submit', sessionRequired(), async (req, res, next) => {
 	try {
-		const testId = req.params.id
+		const testId = req.params.id as string
 		const parsed = SubmitAnswersSchema.safeParse(req.body)
 		if (!parsed.success) {
 			return res.status(400).json({ error: 'Bad request', details: parsed.error.flatten() })

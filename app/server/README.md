@@ -1,112 +1,275 @@
-# its-doc server
+# Bio-Exam Server
 
-Сервис, который управляет файловым деревом Markdown/MDX‑документов, отдает контент по HTTP и поддерживает полнотекстовый поиск с «умной» транслитерацией.
+Express.js сервер для платформы тестирования Bio-Exam.
 
-## Содержание
-- [Краткое описание](#краткое-описание)
-- [Быстрый старт](#быстрый-старт)
-- [Скрипты npm](#скрипты-npm)
-- [Переменные окружения](#переменные-окружения)
-- [Технологический стек](#технологический-стек)
-- [Архитектура и файлы](#архитектура-и-файлы)
-- [API](#api)
-- [Почему импорты оканчиваются на-js](#почему-импорты-оканчиваются-на-js)
-- [Работа с Markdown-контентом](#работа-с-markdown-контентом)
+## Структура проекта
 
-## Краткое описание
-- HTTP-сервер на Express (`src/index.ts`) поднимает API на `/api/docs`, обрабатывает CORS и выполняет healthcheck на `/healthz`.
-- Любые операции с контентом ведутся относительно каталога `DOCS_ROOT` (по умолчанию `../../md`, см. `.env`).
-- `docs.service.ts` отвечает за обход дерева, чтение/запись Markdown, генерацию slug’ов и безопасность путей.
-- `search.service.ts` строит индекс MiniSearch, следит за изменениями через chokidar и поддерживает tolerant-поиск (ASCII fold, транслитерация).
-- Утилиты `fs-safe` и `transliterate` гарантируют безопасную работу с файловой системой и генерацию URL-дружественных путей.
+```
+src/
+├── app.ts                    # Express приложение
+├── index.ts                  # Точка входа
+├── config/                   # Конфигурация
+│   ├── auth.ts               # JWT и сессии
+│   └── env.ts                # Загрузка переменных окружения
+├── db/                       # База данных
+│   ├── index.ts              # Drizzle ORM
+│   ├── schema.ts             # Схемы таблиц
+│   └── seed.ts               # Инициализация БД
+├── lib/                      # Утилиты
+│   ├── constants.ts          # HTTP статусы, сообщения ошибок
+│   ├── errors.ts             # Класс ApiError
+│   ├── fs-safe.ts            # Безопасная работа с путями
+│   └── transliterate.ts      # Транслитерация
+├── middleware/               # Middleware
+│   ├── auth/
+│   │   ├── session.ts        # JWT сессии
+│   │   ├── requirePerm.ts    # Проверка прав (RBAC)
+│   │   └── basic-admin.ts    # Basic Auth для админа
+│   ├── rateLimiter.ts        # Rate limiting
+│   └── validateParams.ts     # Валидация UUID
+├── routes/                   # API маршруты
+│   ├── auth/                 # Аутентификация
+│   ├── users/                # Управление пользователями
+│   ├── tests/                # Тесты и темы
+│   ├── rbac/                 # Права доступа
+│   ├── sidebar/              # Меню сайдбара
+│   └── db/                   # Health checks
+├── schemas/                  # Zod валидации
+│   ├── users.ts
+│   ├── tests.ts
+│   └── rbac.ts
+├── services/                 # Бизнес-логика
+│   ├── rbac/                 # RBAC система
+│   └── storage/              # Supabase Storage
+└── types/                    # TypeScript типы
+    ├── api.ts
+    └── db/
+```
 
-## Быстрый старт
-1. Установите зависимости: `yarn` или `npm install`.
-2. Проверьте переменные в `.env` (минимум `DOCS_ROOT`, `PORT`, `ALLOWED_ORIGIN`).
-3. Запустите dev-режим: `yarn dev` (использует `tsx watch`).
-4. Сборка: `yarn build`, запуск production-сборки: `yarn start`.
-5. Убедитесь, что каталог `DOCS_ROOT` содержит нужную структуру Markdown/MDX (каждый документ хранится без расширения в запросах, но физически лежит как `.md`/`.mdx`).
+## API Endpoints
 
-## Скрипты npm
-- `yarn dev` — живой сервер через `tsx watch`, пересобирает TypeScript налету.
-- `yarn build` — компиляция в `dist/` (`tsc` с `moduleResolution: NodeNext`).
-- `yarn start` — запуск готовой сборки `node dist/index.js` с sourcemap.
-- `yarn typecheck` — статический анализ TypeScript без эмита.
+### Аутентификация (`/api/auth`)
 
-## Переменные окружения
-- `DOCS_ROOT` — абсолютный или относительный путь к каталогу с документацией (по умолчанию `../../md`).
-- `PORT` — порт HTTP-сервера (по умолчанию `4000`).
-- `ALLOWED_ORIGIN` — список доменов, которым разрешён CORS (через запятую).
+| Метод | Путь | Описание | Доступ |
+|-------|------|----------|--------|
+| POST | `/login` | Вход в систему | Public (rate limited) |
+| POST | `/logout` | Выход | Public |
+| GET | `/me` | Текущий пользователь | Optional session |
+| POST | `/invites` | Создать приглашение | `users.invite` |
+| GET | `/invites/validate/:token` | Проверить токен | Public |
+| POST | `/invites/accept` | Активировать аккаунт | Public |
 
-## Технологический стек
-- **Node.js 18.17+ / Express 4** — web-сервер и маршрутизация.
-- **TypeScript 5 (ESM, `module: "NodeNext"`)** — строгая типизация и современный импорт.
-- **tsx** — запуск TypeScript без ручной компиляции в dev-режиме.
-- **gray-matter** — работа с frontmatter в Markdown/MDX.
-- **chokidar** — наблюдение за изменениями файлов для поиска.
-- **MiniSearch** — полнотекстовый индекс с fuzziness и кастомной токенизацией.
-- **cyrillic-to-translit-js** — транслитерация для slug’ов и поиска.
-- **remove-markdown** — очистка Markdown до plain text для индекса.
-- **dotenv / cors** — конфигурация окружения и контроль доступа.
+### Пользователи (`/api/users`)
 
-## Архитектура и файлы
+| Метод | Путь | Описание | Доступ |
+|-------|------|----------|--------|
+| GET | `/` | Список пользователей | `users.read` |
+| PATCH | `/:id` | Обновить пользователя | `users.edit` |
+| DELETE | `/:id` | Удалить пользователя | `users.edit` |
+| PATCH | `/profile` | Обновить свой профиль | Session |
+| POST | `/profile/password` | Сменить пароль | Session |
+| POST | `/avatar` | Загрузить аватар | Session |
+| DELETE | `/avatar` | Удалить аватар | Session |
 
-### Точка входа
-- `src/index.ts` — инициализация Express, настройка CORS, регистрация JSON-парсера и роутов. Здесь же рассчитывается `DOCS_ROOT` и запускается сервер.
+### Тесты (`/api/tests`)
 
-### Конфигурация
-- `src/config/docs.ts` — экспортирует `DOCS_ROOT` (из `.env` или дефолт) и хелпер `toPosix`, выравнивающий пути.
+**Административные маршруты:**
 
-### Утилиты
-- `src/lib/fs-safe.ts` — `resolveSafe` не позволяет выйти за пределы `DOCS_ROOT`, `isAllowedFile` фильтрует расширения.
-- `src/lib/transliterate.ts` — преобразует кириллицу в латиницу для URL-слуг; дополнительно предоставляет обратную транслитерацию.
-- `src/types/cyrillic-to-translit-js.d.ts` — локальная декларация типов для сторонней библиотеки.
+| Метод | Путь | Описание | Доступ |
+|-------|------|----------|--------|
+| GET | `/topics` | Список тем | `tests.write` |
+| POST | `/topics` | Создать тему | `tests.write` |
+| PATCH | `/topics/:id` | Редактировать тему | `tests.write` |
+| DELETE | `/topics/:id` | Удалить тему | `tests.write` |
+| GET | `/` | Список тестов | `tests.write` |
+| GET | `/:id` | Тест для редактирования | `tests.write` |
+| POST | `/save` | Создать тест | `tests.write` |
+| POST | `/:id/save` | Обновить тест | `tests.write` |
+| DELETE | `/:id` | Удалить тест | `tests.write` |
+| GET | `/:id/export` | Экспорт теста (ZIP) | `tests.write` |
+| GET | `/topics/:slug/export` | Экспорт темы (ZIP) | `tests.write` |
 
-### Сервисы
-- `src/services/docs.service.ts`
-  - `readDir(rel, deep)` — возвращает `DocNode[]` каталога: фильтрует скрытые элементы, читает `index.mdx`, кэширует наличие вложенных файлов.
-  - `getFile(rel)` — ищет `.mdx`/`.md`, считает frontmatter+контент через `gray-matter`.
-  - `saveFile({ rel, body, frontmatter })` — валидирует путь, сливает frontmatter и сохраняет документ.
-  - `createDraftSlug({ title, parent })` — генерирует уникальный slug с трансформацией `transliterate` и проверкой на коллизии.
-  - `createFolder` / `deleteEntry` — CRUD для каталогов/файлов, используют `resolveSafe`.
-  - Дополнительно: матчит элементы по slug/case-insensitive, определяет «видимость» узлов, читает метаданные директории.
-- `src/services/search.service.ts`
-  - `buildSearchIndex()` — строит MiniSearch по всему дереву (`readDir('', true)` ➜ `flattenFiles`), настраивает токенизацию (`tokenizeUnicode`) и процессинг терминов (ASCII fold + транслитерация).
-  - Подписывается на изменения в `DOCS_ROOT` (chokidar) и при `add/change/unlink` обновляет индекс в памяти.
-  - `searchInIndex(query, limit, offset)` — расширяет запрос (транслит + ASCII), ищет с fuzziness, ранжирует по score и готовит HTML-сниппеты через `highlight`.
+**Публичные маршруты (`/api/tests/public`):**
 
-### Маршруты
-- `src/routes/index.ts` — группирует все роуты (пока только `/docs`).
-- `src/routes/docs/*.ts` — отдельные сегменты API:
-  - `tree.ts` — `GET /api/docs/tree?path=&full=`: дерево каталога (опция `full` рекурсивно подгружает `children`).
-  - `entries.ts` — `GET /api/docs/entries?path=&deep=`: список узлов + `DirInfo` (название, флаг `hasIndex`, наличие дочерних документов).
-  - `files.ts` — `GET /api/docs/files?path=` читает документ; `PUT /api/docs/files` сохраняет тело и frontmatter.
-  - `folders.ts` — `POST /api/docs/folders` создаёт каталог.
-  - `drafts.ts` — `POST /api/docs/drafts` возвращает безопасный slug по title и опциональному parent.
-  - `search.ts` — `GET /api/docs/search?q=&limit=&offset=` ищет по индексу (lazy-построение `buildSearchIndex`).
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET | `/topics` | Активные темы |
+| GET | `/topics/:slug/tests` | Опубликованные тесты темы |
+| GET | `/tests/:slug` | Тест без ответов |
+| POST | `/tests/:id/submit` | Отправить ответы |
 
-## API
-- `GET /healthz` — простой healthcheck `{ ok: true }`.
-- `GET /api/docs/tree` — дерево разделов.
-- `GET /api/docs/entries` — содержимое каталога + метаданные.
-- `GET /api/docs/files` — Markdown/MDX документ (frontmatter + body).
-- `PUT /api/docs/files` — сохранение документа.
-- `POST /api/docs/folders` — создание папки.
-- `POST /api/docs/drafts` — генерация slug’а для черновика.
-- `GET /api/docs/search` — полнотекстовый поиск по индексу.
+### RBAC (`/api/rbac`)
 
-Ответы используют POSIX-пути (`/`), чтобы совпадать с URL-фронтенда. Исключения и ошибки возвращаются в виде `{ error: string }` с корректными HTTP-кодами (`400`, `404`, `500`).
+| Метод | Путь | Описание | Доступ |
+|-------|------|----------|--------|
+| GET | `/roles` | Список ролей | `rbac.read` |
+| POST | `/grant` | Добавить grant роли | `rbac.write` |
+| DELETE | `/grant` | Удалить grant роли | `rbac.write` |
+| GET | `/user/:id/grants` | Права пользователя | `rbac.read` |
+| POST | `/user/grant` | User override | `rbac.write` |
+| DELETE | `/user/grant` | Удалить override | `rbac.write` |
+| GET | `/pages` | Page rules | `rbac.read` |
+| POST | `/pages` | Создать page rule | `rbac.write` |
+| PATCH | `/pages/:id` | Обновить page rule | `rbac.write` |
+| DELETE | `/pages/:id` | Удалить page rule | `rbac.write` |
 
-## Почему импорты оканчиваются на `.js`
-Проект работает в ESM-режиме (`"type": "module"` в `package.json` и `moduleResolution: "NodeNext"` в `tsconfig.json`). TypeScript компилирует `.ts` в `.js`, и Node.js в ESM требует точные расширения при `import`. Поэтому в исходниках `import x from './file.js'` — так рантайм без бандлера корректно найдёт скомпилированный `file.js` в `dist/`. Это также устраняет расхождения между dev-режимом (`tsx`) и production-запуском (`node dist/...`).
+### Сайдбар (`/api/sidebar`)
 
-## Работа с Markdown-контентом
-- В Git сохраняются файлы `.md`/`.mdx`, но API оперирует путями без расширений (удобно для URL и slug’ов).
-- `gray-matter` автоматически парсит frontmatter и сохраняет его обратно при записи.
-- `DocNode.hasIndex` сигнализирует, есть ли `index.mdx` внутри раздела, а `hasChildren` показывает, содержатся ли вложенные документы.
-- Поиск и генерация slug’ов учитывают кириллицу: `transliterate` приводит названия к латинице, `asciiFold` убирает диакритику, а MiniSearch ищет по нескольким вариантам слова.
-- Chokidar в dev/prod следит за файлами в `DOCS_ROOT`, поэтому индексация поиска не требует ручных перезапусков.
+| Метод | Путь | Описание | Доступ |
+|-------|------|----------|--------|
+| GET | `/` | Активные пункты меню | Public |
+| GET | `/all` | Все пункты меню | `settings.manage` |
+| POST | `/` | Создать пункт | `settings.manage` |
+| PUT | `/:id` | Обновить пункт | `settings.manage` |
+| PATCH | `/reorder` | Изменить порядок | `settings.manage` |
+| DELETE | `/:id` | Удалить пункт | `settings.manage` |
 
----
+### Health Checks
 
-Если понадобятся новые эндпоинты, удобнее добавить их в `src/routes/docs/` и использовать уже готовые сервисы (`docs.service.ts`, `search.service.ts`), чтобы сохранить единые правила трансформации путей и доступ к файловой системе.
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET | `/healthz` | Базовая проверка |
+| GET | `/healthz/db` | Проверка БД с версией |
+
+## Middleware
+
+### Session (`session.ts`)
+
+- **`sessionOptional()`** - читает JWT из cookie, не блокирует запрос
+- **`sessionRequired()`** - требует авторизацию, возвращает 401
+
+Cookie параметры:
+- `HttpOnly` - защита от XSS
+- `SameSite=Lax` - защита от CSRF
+- `Secure` - только HTTPS в production
+- `Max-Age` - 30 дней по умолчанию
+
+### Rate Limiter (`rateLimiter.ts`)
+
+- In-memory хранилище
+- По умолчанию: 5 попыток / 60 секунд на IP
+- Автоочистка каждые 5 минут
+- Поддержка `X-Forwarded-For`
+- Заголовки: `Retry-After`, `X-RateLimit-*`
+
+### RBAC (`requirePerm.ts`)
+
+- **`requirePerm(domain, action)`** - проверка права
+- **`requirePermKey(key)`** - проверка по ключу
+
+### UUID Validation (`validateParams.ts`)
+
+- Regex валидация UUID v4
+- Middleware для автопроверки параметров
+
+## Сервисы
+
+### RBAC Service
+
+Иерархия прав:
+1. Дефолтные права ролей
+2. Role-level grants (allow/deny)
+3. User-level grants (высший приоритет)
+
+Формат: `domain.action` (например: `tests.write`, `users.read`)
+
+Функции:
+- `buildPermissionSet(roles)` - права для ролей
+- `buildPermissionSetForUser(userId)` - эффективные права пользователя
+- `invalidateRBACCache()` - очистка кэша
+
+### Storage Service
+
+Интеграция с Supabase Storage.
+
+Функции:
+- `readFile(path)` / `writeFile(path, content)`
+- `readJson<T>(path)` / `writeJson(path, data)`
+- `deleteFiles(paths)` / `deleteDirectory(prefix)`
+- `listFiles(prefix)` / `listFilesRecursive(prefix)`
+- `createZip(basePath, includeAnswers)`
+- `exists(path)`
+
+Retry: экспоненциальная задержка, 3 попытки.
+
+## Типы вопросов в тестах
+
+- **`radio`** - одиночный выбор
+- **`checkbox`** - множественный выбор
+- **`matching`** - соответствие пар
+
+## Конфигурация
+
+### Переменные окружения
+
+| Переменная | Описание | По умолчанию |
+|------------|----------|--------------|
+| `DATABASE_URL` | PostgreSQL DSN | - |
+| `AUTH_JWT_SECRET` | JWT секрет | `dev-secret-change-me` |
+| `SESSION_COOKIE_NAME` | Имя cookie | `bio_exam_session` |
+| `SESSION_MAX_AGE_DAYS` | Время жизни сессии | `30` |
+| `ALLOWED_ORIGIN` | CORS origins (через запятую) | - |
+| `NODE_ENV` | Окружение | `development` |
+| `LOG_LEVEL` | Уровень логов | `info` |
+| `PORT` | Порт сервера | `3000` |
+| `SUPABASE_URL` | Supabase URL | - |
+| `SUPABASE_SERVICE_KEY` | Supabase ключ | - |
+| `SUPABASE_STORAGE_BUCKET` | Storage bucket | - |
+| `ADMIN_LOGIN` | Логин админа (Basic Auth) | - |
+| `ADMIN_PASSWORD_HASH` | Хеш пароля админа | - |
+
+### Приоритет загрузки .env
+
+1. `app/server/.env` (высший)
+2. `cwd/.env`
+3. `app/.env`
+4. `repo/.env`
+
+## Безопасность
+
+- JWT в HttpOnly cookie с SameSite=Lax
+- Rate limiting на `/login`
+- Защита от timing-атак (dummy bcrypt hash)
+- Многоуровневая RBAC система
+- Helmet.js security headers
+- UUID валидация параметров
+- Bcrypt хеширование (12 rounds)
+- Safe path resolution
+- CORS контроль
+
+## Обработка ошибок
+
+Класс `ApiError` с методами:
+- `ApiError.badRequest(msg)` - 400
+- `ApiError.unauthorized(msg)` - 401
+- `ApiError.forbidden(msg)` - 403
+- `ApiError.notFound(msg)` - 404
+- `ApiError.conflict(msg)` - 409
+- `ApiError.tooManyRequests(msg)` - 429
+- `ApiError.internal(msg)` - 500
+
+## Технологии
+
+- **Runtime:** Node.js
+- **Framework:** Express.js
+- **ORM:** Drizzle ORM
+- **Database:** PostgreSQL
+- **Validation:** Zod
+- **Auth:** JWT + bcrypt
+- **Storage:** Supabase Storage
+- **Logging:** Pino
+- **Security:** Helmet.js
+
+## Запуск
+
+```bash
+# Установка зависимостей
+yarn install
+
+# Разработка
+yarn dev
+
+# Production build
+yarn build
+yarn start
+```

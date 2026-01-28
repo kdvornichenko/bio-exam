@@ -44,6 +44,32 @@ export class StorageService {
 	}
 
 	/**
+	 * Выполняет асинхронную функцию с логикой повторных попыток и экспоненциальной задержкой
+	 * @param fn Асинхронная функция для выполнения
+	 * @param retries Количество попыток повтора (по умолчанию: 3)
+	 * @param baseDelayMs Базовая задержка в миллисекундах (по умолчанию: 500)
+	 * @returns Результат выполнения функции
+	 */
+	async withRetry<T>(fn: () => Promise<T>, retries = 3, baseDelayMs = 500): Promise<T> {
+		let lastError: Error | unknown
+
+		for (let attempt = 0; attempt <= retries; attempt++) {
+			try {
+				return await fn()
+			} catch (e) {
+				lastError = e
+				if (attempt < retries) {
+					const delay = baseDelayMs * Math.pow(2, attempt)
+					console.warn(`[StorageService] Попытка ${attempt + 1} не удалась, повтор через ${delay}мс...`)
+					await new Promise((resolve) => setTimeout(resolve, delay))
+				}
+			}
+		}
+
+		throw lastError
+	}
+
+	/**
 	 * Читает файл из Storage
 	 * @param path Путь к файлу (относительно bucket)
 	 * @returns Содержимое файла или пустую строку при ошибке
@@ -66,7 +92,44 @@ export class StorageService {
 	}
 
 	/**
+	 * Читает несколько файлов параллельно с ограничением concurrency
+	 * @param paths Массив путей к файлам
+	 * @param concurrency Максимальное количество параллельных запросов (default: 5)
+	 * @returns Map с путями файлов и их содержимым
+	 */
+	async readFilesParallel(paths: string[], concurrency = 5): Promise<Map<string, string>> {
+		const client = getClient()
+		if (!client) return new Map()
+
+		const result = new Map<string, string>()
+		if (paths.length === 0) return result
+
+		// Обрабатываем файлы пакетами для ограничения параллелизма
+		for (let i = 0; i < paths.length; i += concurrency) {
+			const batch = paths.slice(i, i + concurrency)
+			const batchResults = await Promise.all(
+				batch.map(async (path) => {
+					try {
+						const content = await this.readFile(path)
+						return { path, content }
+					} catch (e) {
+						console.error(`[StorageService] Error reading file ${path}:`, e)
+						return { path, content: '' }
+					}
+				})
+			)
+
+			for (const { path, content } of batchResults) {
+				result.set(path, content)
+			}
+		}
+
+		return result
+	}
+
+	/**
 	 * Записывает файл в Storage (создаёт или перезаписывает)
+	 * Включает автоматический retry с экспоненциальной задержкой
 	 * @param path Путь к файлу (относительно bucket)
 	 * @param content Содержимое файла
 	 */
@@ -76,19 +139,22 @@ export class StorageService {
 			throw new Error('[StorageService] Cannot write: Supabase not configured')
 		}
 
-		const { error } = await client.storage.from(BUCKET).upload(path, content, {
-			contentType: 'text/markdown',
-			upsert: true,
-		})
+		await this.withRetry(async () => {
+			const { error } = await client.storage.from(BUCKET).upload(path, content, {
+				contentType: 'text/markdown',
+				upsert: true,
+			})
 
-		if (error) {
-			console.error(`[StorageService] FAILED to write file ${path}:`, error)
-			throw new Error(`Storage error: ${error.message}`)
-		}
+			if (error) {
+				console.error(`[StorageService] FAILED to write file ${path}:`, error)
+				throw new Error(`Storage error: ${error.message}`)
+			}
+		})
 	}
 
 	/**
 	 * Записывает JSON файл в Storage
+	 * Включает автоматический retry с экспоненциальной задержкой
 	 * @param path Путь к файлу (относительно bucket)
 	 * @param data Данные для записи
 	 */
@@ -98,15 +164,17 @@ export class StorageService {
 			throw new Error('[StorageService] Cannot write JSON: Supabase not configured')
 		}
 
-		const { error } = await client.storage.from(BUCKET).upload(path, JSON.stringify(data, null, 2), {
-			contentType: 'application/json',
-			upsert: true,
-		})
+		await this.withRetry(async () => {
+			const { error } = await client.storage.from(BUCKET).upload(path, JSON.stringify(data, null, 2), {
+				contentType: 'application/json',
+				upsert: true,
+			})
 
-		if (error) {
-			console.error(`[StorageService] FAILED to write JSON ${path}:`, error)
-			throw new Error(`Storage error: ${error.message}`)
-		}
+			if (error) {
+				console.error(`[StorageService] FAILED to write JSON ${path}:`, error)
+				throw new Error(`Storage error: ${error.message}`)
+			}
+		})
 	}
 
 	/**
@@ -275,5 +343,5 @@ export class StorageService {
 	}
 }
 
-// Singleton instance
+// Singleton экземпляр
 export const storageService = new StorageService()

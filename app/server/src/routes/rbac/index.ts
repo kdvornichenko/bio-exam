@@ -2,12 +2,21 @@ import { ROLE_REGISTRY, type RoleKey } from '@bio-exam/rbac'
 
 import { and, eq } from 'drizzle-orm'
 import { Router } from 'express'
-import { z } from 'zod'
 
 import { db } from '../../db/index.js'
 import { rbacPageRules, rbacRoleGrants, rbacUserGrants, userRoles } from '../../db/schema.js'
+import { ERROR_MESSAGES } from '../../lib/constants.js'
 import { requirePerm } from '../../middleware/auth/requirePerm.js'
 import { sessionRequired } from '../../middleware/auth/session.js'
+import { validateUUID } from '../../middleware/validateParams.js'
+import {
+	GrantSchema,
+	DeleteGrantSchema,
+	UserGrantSchema,
+	DeleteUserGrantSchema,
+	PageRuleSchema,
+	PatchPageRuleSchema,
+} from '../../schemas/rbac.js'
 import { invalidateRBACCache, buildPermissionSet, isValidAction } from '../../services/rbac/rbac.js'
 
 const router = Router()
@@ -29,22 +38,15 @@ router.get('/roles', sessionRequired(), requirePerm('rbac', 'read'), async (_req
 	}
 })
 
-const GrantBody = z.object({
-	roleKey: z.string(),
-	domain: z.string(),
-	action: z.string(),
-	allow: z.boolean(),
-})
-
 router.post('/grant', sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
 	try {
-		const parsed = GrantBody.safeParse(req.body)
-		if (!parsed.success) return res.status(400).json({ error: 'Bad request', details: parsed.error.flatten() })
+		const parsed = GrantSchema.safeParse(req.body)
+		if (!parsed.success) return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
 		const { roleKey, domain, action, allow } = parsed.data
 
-		if (roleKey === 'admin') return res.status(400).json({ error: 'Admin role grants are immutable' })
-		if (!ROLE_REGISTRY[roleKey as RoleKey]) return res.status(404).json({ error: 'Unknown role' })
-		if (!isValidAction(domain, action)) return res.status(400).json({ error: 'Unknown domain/action' })
+		if (roleKey === 'admin') return res.status(400).json({ error: ERROR_MESSAGES.ADMIN_GRANTS_IMMUTABLE })
+		if (!ROLE_REGISTRY[roleKey as RoleKey]) return res.status(404).json({ error: ERROR_MESSAGES.UNKNOWN_ROLE })
+		if (!isValidAction(domain, action)) return res.status(400).json({ error: ERROR_MESSAGES.UNKNOWN_DOMAIN_ACTION })
 
 		await db
 			.insert(rbacRoleGrants)
@@ -63,11 +65,11 @@ router.post('/grant', sessionRequired(), requirePerm('rbac', 'write'), async (re
 
 router.delete('/grant', sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
 	try {
-		const parsed = GrantBody.omit({ allow: true }).safeParse(req.body)
-		if (!parsed.success) return res.status(400).json({ error: 'Bad request', details: parsed.error.flatten() })
+		const parsed = DeleteGrantSchema.safeParse(req.body)
+		if (!parsed.success) return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
 		const { roleKey, domain, action } = parsed.data
 
-		if (roleKey === 'admin') return res.status(400).json({ error: 'Admin role grants are immutable' })
+		if (roleKey === 'admin') return res.status(400).json({ error: ERROR_MESSAGES.ADMIN_GRANTS_IMMUTABLE })
 
 		await db
 			.delete(rbacRoleGrants)
@@ -84,7 +86,7 @@ router.delete('/grant', sessionRequired(), requirePerm('rbac', 'write'), async (
 
 // ---------- User grants (user overrides have priority over role)
 
-router.get('/user/:id/grants', sessionRequired(), requirePerm('rbac', 'read'), async (req, res, next) => {
+router.get('/user/:id/grants', validateUUID('id'), sessionRequired(), requirePerm('rbac', 'read'), async (req, res, next) => {
 	try {
 		const userId = req.params.id
 
@@ -123,25 +125,18 @@ router.get('/user/:id/grants', sessionRequired(), requirePerm('rbac', 'read'), a
 	}
 })
 
-const UserGrantBody = z.object({
-	userId: z.string().uuid(),
-	domain: z.string(),
-	action: z.string(),
-	allow: z.boolean(),
-})
-
 // upsert персонального override (allow=true|false)
 router.post('/user/grant', sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
 	try {
-		const parsed = UserGrantBody.safeParse(req.body)
-		if (!parsed.success) return res.status(400).json({ error: 'Bad request', details: parsed.error.flatten() })
+		const parsed = UserGrantSchema.safeParse(req.body)
+		if (!parsed.success) return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
 		const { userId, domain, action, allow } = parsed.data
 
-		if (!isValidAction(domain, action)) return res.status(400).json({ error: 'Unknown domain/action' })
+		if (!isValidAction(domain, action)) return res.status(400).json({ error: ERROR_MESSAGES.UNKNOWN_DOMAIN_ACTION })
 
 		// если пользователь — admin, не даём трогать
 		const rs = await db.select({ role: userRoles.roleKey }).from(userRoles).where(eq(userRoles.userId, userId))
-		if (rs.some((r) => r.role === 'admin')) return res.status(400).json({ error: 'Admin user grants are immutable' })
+		if (rs.some((r) => r.role === 'admin')) return res.status(400).json({ error: ERROR_MESSAGES.ADMIN_USER_GRANTS_IMMUTABLE })
 
 		await db
 			.insert(rbacUserGrants)
@@ -161,8 +156,8 @@ router.post('/user/grant', sessionRequired(), requirePerm('rbac', 'write'), asyn
 // удалить персональный override (вернуться к поведению роли)
 router.delete('/user/grant', sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
 	try {
-		const parsed = UserGrantBody.omit({ allow: true }).safeParse(req.body)
-		if (!parsed.success) return res.status(400).json({ error: 'Bad request', details: parsed.error.flatten() })
+		const parsed = DeleteUserGrantSchema.safeParse(req.body)
+		if (!parsed.success) return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
 		const { userId, domain, action } = parsed.data
 
 		await db
@@ -180,15 +175,6 @@ router.delete('/user/grant', sessionRequired(), requirePerm('rbac', 'write'), as
 
 // ---------- Optional: page rules
 
-const RuleBody = z.object({
-	id: z.string().uuid().optional(),
-	pattern: z.string().min(1),
-	domain: z.string(),
-	action: z.string(),
-	exact: z.boolean().optional().default(false),
-	enabled: z.boolean().optional().default(true),
-})
-
 router.get('/pages', sessionRequired(), requirePerm('rbac', 'read'), async (_req, res, next) => {
 	try {
 		const rules = await db.select().from(rbacPageRules)
@@ -200,8 +186,8 @@ router.get('/pages', sessionRequired(), requirePerm('rbac', 'read'), async (_req
 
 router.post('/pages', sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
 	try {
-		const parsed = RuleBody.safeParse(req.body)
-		if (!parsed.success) return res.status(400).json({ error: 'Bad request', details: parsed.error.flatten() })
+		const parsed = PageRuleSchema.safeParse(req.body)
+		if (!parsed.success) return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
 		const { pattern, domain, action, exact, enabled } = parsed.data
 		await db.insert(rbacPageRules).values({ pattern, domain, action, exact, enabled })
 		res.json({ ok: true })
@@ -210,11 +196,11 @@ router.post('/pages', sessionRequired(), requirePerm('rbac', 'write'), async (re
 	}
 })
 
-router.patch('/pages/:id', sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
+router.patch('/pages/:id', validateUUID('id'), sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
 	try {
 		const id = req.params.id
-		const parsed = RuleBody.partial({ pattern: true, domain: true, action: true }).safeParse(req.body)
-		if (!parsed.success) return res.status(400).json({ error: 'Bad request', details: parsed.error.flatten() })
+		const parsed = PatchPageRuleSchema.safeParse(req.body)
+		if (!parsed.success) return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
 		await db.update(rbacPageRules).set(parsed.data).where(eq(rbacPageRules.id, id))
 		res.json({ ok: true })
 	} catch (e) {
@@ -222,7 +208,7 @@ router.patch('/pages/:id', sessionRequired(), requirePerm('rbac', 'write'), asyn
 	}
 })
 
-router.delete('/pages/:id', sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
+router.delete('/pages/:id', validateUUID('id'), sessionRequired(), requirePerm('rbac', 'write'), async (req, res, next) => {
 	try {
 		const id = req.params.id
 		await db.delete(rbacPageRules).where(eq(rbacPageRules.id, id))

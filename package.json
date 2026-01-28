@@ -17,7 +17,7 @@
 		"dev": "yarn build:rbac && concurrently \"yarn --cwd app/server dev\" \"yarn --cwd app/web dev\""
 	},
 	"devDependencies": {
-		"baseline-browser-mapping": "^2.8.32",
+		"baseline-browser-mapping": "^2.9.19",
 		"concurrently": "^8.2.2"
 	},
 	"resolutions": {

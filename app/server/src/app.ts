@@ -13,6 +13,7 @@ import pino from 'pino'
 import pinoHttp from 'pino-http'
 
 import './config/env.js'
+import { ApiError, isApiError } from './lib/errors.js'
 import { sessionOptional } from './middleware/auth/session.js'
 import healthRouter from './routes/db/health.js'
 import apiRouter from './routes/index.js'
@@ -78,16 +79,50 @@ app.use('/healthz', healthRouter) // /healthz/db
 // --- API
 app.use('/api', apiRouter)
 
-type ReqWithLog = Request & { log?: { error: (obj: unknown, msg?: string) => void } }
+type ReqWithLog = Request & {
+	log?: { error: (obj: unknown, msg?: string) => void }
+	id?: string
+}
+
 const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
+	const reqWithLog = req as unknown as ReqWithLog
+	const requestId = reqWithLog.id || crypto.randomUUID()
+
+	// Логируем ошибку с контекстом
 	try {
-		;(req as unknown as ReqWithLog).log?.error({ err }, 'Unhandled error')
+		reqWithLog.log?.error(
+			{
+				err,
+				requestId,
+				method: req.method,
+				path: req.path,
+				isOperational: isApiError(err) ? err.isOperational : false,
+			},
+			'Request error'
+		)
 	} catch {
-		/* ignore */
+		// Игнорируем ошибки логирования
 	}
-	const status = typeof (err as { status?: unknown }).status === 'number' ? (err as { status?: number }).status! : 500
-	const message = err instanceof Error ? err.message : 'Internal Server Error'
-	res.status(status).json({ error: message })
+
+	// Определяем статус-код и сообщение
+	let status: number
+	let message: string
+
+	if (isApiError(err)) {
+		status = err.statusCode
+		message = err.message
+	} else if (typeof (err as { status?: unknown }).status === 'number') {
+		status = (err as { status: number }).status
+		message = err instanceof Error ? err.message : 'Internal Server Error'
+	} else {
+		status = 500
+		message = process.env.NODE_ENV === 'production' ? 'Internal Server Error' : (err instanceof Error ? err.message : 'Internal Server Error')
+	}
+
+	res.status(status).json({
+		error: message,
+		...(process.env.NODE_ENV !== 'production' && { requestId }),
+	})
 }
 app.use(errorHandler)
 

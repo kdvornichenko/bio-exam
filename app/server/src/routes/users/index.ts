@@ -3,12 +3,14 @@ import { ROLE_KEYS } from '@bio-exam/rbac'
 
 import { desc, eq, sql } from 'drizzle-orm'
 import { Router } from 'express'
-import { z } from 'zod'
 
 import { db } from '../../db/index.js'
 import { users, userRoles } from '../../db/schema.js'
+import { ERROR_MESSAGES } from '../../lib/constants.js'
 import { requirePerm } from '../../middleware/auth/requirePerm.js'
 import { sessionRequired } from '../../middleware/auth/session.js'
+import { validateUUID } from '../../middleware/validateParams.js'
+import { PatchUserSchema } from '../../schemas/users.js'
 import { invalidateRBACCache } from '../../services/rbac/rbac.js'
 import type { UserRow } from '../../types/db/users.js'
 import avatarRouter from './avatar.js'
@@ -115,51 +117,17 @@ router.get('/', sessionRequired(), requirePerm('users', 'read'), async (_req, re
 	}
 })
 
-const PatchBody = z.object({
-	firstName: z.string().trim().max(100).optional(),
-	lastName: z.string().trim().max(100).optional(),
-	login: z
-		.string()
-		.trim()
-		.regex(/^[a-z0-9._-]{3,32}$/)
-		.optional(),
-	isActive: z.boolean().optional(),
-	roles: z.array(z.string()).optional(),
-	position: z.string().trim().max(100).optional(),
-	birthdate: z
-		.string()
-		.transform((val: string) => {
-			if (!val) return null
-			// Если формат дд/мм/гггг - конвертируем в YYYY-MM-DD
-			if (/^\d{2}\/\d{2}\/\d{4}$/.test(val)) {
-				const [day, month, year] = val.split('/')
-				return `${year}-${month}-${day}`
-			}
-			// Если уже в формате YYYY-MM-DD - оставляем как есть
-			if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
-				return val
-			}
-			return null
-		})
-		.optional()
-		.or(z.null()),
-	telegram: z.string().trim().max(100).optional(),
-	phone: z.string().trim().max(50).optional(),
-	email: z.string().email().optional().or(z.literal('')).or(z.null()),
-	showInTeam: z.boolean().optional(),
-})
-
-router.patch('/:id', sessionRequired(), requirePerm('users', 'edit'), async (req, res, next) => {
+router.patch('/:id', validateUUID('id'), sessionRequired(), requirePerm('users', 'edit'), async (req, res, next) => {
 	try {
 		const id = req.params.id
-		const parsed = PatchBody.safeParse(req.body)
+		const parsed = PatchUserSchema.safeParse(req.body)
 		if (!parsed.success) {
-			return res.status(400).json({ error: 'Bad request', details: parsed.error.flatten() })
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
 		}
 		const body = parsed.data
 
 		const existing = await db.query.users.findFirst({ where: eq(users.id, id) })
-		if (!existing) return res.status(404).json({ error: 'User not found' })
+		if (!existing) return res.status(404).json({ error: ERROR_MESSAGES.USER_NOT_FOUND })
 
 		let rolesChanged = false
 
@@ -202,12 +170,12 @@ router.patch('/:id', sessionRequired(), requirePerm('users', 'edit'), async (req
 })
 
 // DELETE /api/users/:id — удаление пользователя
-router.delete('/:id', sessionRequired(), requirePerm('users', 'edit'), async (req, res, next) => {
+router.delete('/:id', validateUUID('id'), sessionRequired(), requirePerm('users', 'edit'), async (req, res, next) => {
 	try {
 		const id = req.params.id
 
 		const existing = await db.query.users.findFirst({ where: eq(users.id, id) })
-		if (!existing) return res.status(404).json({ error: 'User not found' })
+		if (!existing) return res.status(404).json({ error: ERROR_MESSAGES.USER_NOT_FOUND })
 
 		// Удаляем пользователя (каскадное удаление обработает связанные записи)
 		await db.delete(users).where(eq(users.id, id))

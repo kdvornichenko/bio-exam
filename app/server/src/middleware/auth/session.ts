@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm'
 import { NextFunction, Request, Response } from 'express'
 import jwt from 'jsonwebtoken'
 
+import { AUTH_CONFIG } from '../../config/auth.js'
 import { db } from '../../db/index.js'
 import { userRoles, users } from '../../db/schema.js'
 
@@ -19,9 +20,7 @@ declare module 'express-serve-static-core' {
 	}
 }
 
-const COOKIE = process.env.SESSION_COOKIE_NAME || 'itsdoc_session'
-const AC_COOKIE = 'itsdoc_ac_token'
-const JWT_SECRET = process.env.AUTH_JWT_SECRET || 'dev-secret-change-me'
+const { sessionCookieName: COOKIE, jwtSecret: JWT_SECRET } = AUTH_CONFIG
 
 function readCookie(req: Request, name: string): string | null {
 	const raw = req.headers.cookie
@@ -57,32 +56,6 @@ export function clearSessionCookie(res: Response) {
 		Boolean
 	)
 	res.setHeader('Set-Cookie', parts.join('; '))
-}
-
-// ActiveCollab token cookie helpers
-export function setActiveCollabTokenCookie(res: Response, token: string, maxAgeSec: number = 30 * 24 * 60 * 60) {
-	const secure = process.env.NODE_ENV === 'production'
-	const parts = [
-		`${AC_COOKIE}=${encodeURIComponent(token)}`,
-		`Path=/`,
-		`HttpOnly`,
-		`SameSite=Lax`,
-		`Max-Age=${maxAgeSec}`,
-		secure ? 'Secure' : undefined,
-	].filter(Boolean)
-	res.setHeader('Set-Cookie', parts.join('; '))
-}
-
-export function clearActiveCollabTokenCookie(res: Response) {
-	const secure = process.env.NODE_ENV === 'production'
-	const parts = [`${AC_COOKIE}=`, `Path=/`, `HttpOnly`, `SameSite=Lax`, `Max-Age=0`, secure ? 'Secure' : undefined].filter(
-		Boolean
-	)
-	res.setHeader('Set-Cookie', parts.join('; '))
-}
-
-export function readActiveCollabToken(req: Request): string | null {
-	return readCookie(req, AC_COOKIE)
 }
 
 type JwtPayload = { sub: string; roles?: string[] } // роли в токене могут быть строками
