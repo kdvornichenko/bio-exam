@@ -200,7 +200,7 @@ router.get('/', sessionRequired(), requirePerm('tests', 'read'), async (req, res
 // GET /api/tests/by-slug/:topicSlug/:testSlug - загрузить тест по slug
 router.get('/by-slug/:topicSlug/:testSlug', sessionRequired(), requirePerm('tests', 'read'), async (req, res, next) => {
 	try {
-		const { topicSlug, testSlug } = req.params
+		const { topicSlug, testSlug } = req.params as { topicSlug: string; testSlug: string }
 
 		// Находим тему по slug
 		const topic = await db.query.topics.findFirst({
@@ -219,7 +219,11 @@ router.get('/by-slug/:topicSlug/:testSlug', sessionRequired(), requirePerm('test
 		}
 
 		// Загружаем вопросы
-		const questionRows = await db.select().from(questions).where(eq(questions.testId, test.id)).orderBy(asc(questions.order))
+		const questionRows = await db
+			.select()
+			.from(questions)
+			.where(eq(questions.testId, test.id))
+			.orderBy(asc(questions.order))
 
 		// Загружаем активные ключи ответов
 		const questionIds = questionRows.map((q) => q.id)
