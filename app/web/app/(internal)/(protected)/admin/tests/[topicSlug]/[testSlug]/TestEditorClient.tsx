@@ -53,10 +53,11 @@ export default function TestEditorClient({ topicSlug, testSlug }: Props) {
 	const isNew = !topicSlug || !testSlug
 
 	const { data: topicsData, mutate: mutateTopics } = useSWR<TopicsResponse>('/api/tests/topics', fetcher)
-	const { data: testData, isLoading: testLoading } = useSWR<TestDetailResponse>(
-		!isNew ? `/api/tests/by-slug/${topicSlug}/${testSlug}` : null,
-		fetcher
-	)
+	const {
+		data: testData,
+		isLoading: testLoading,
+		mutate: mutateTest,
+	} = useSWR<TestDetailResponse>(!isNew ? `/api/tests/by-slug/${topicSlug}/${testSlug}` : null, fetcher)
 
 	const [saving, setSaving] = useState(false)
 	const [form, setForm] = useState<TestFormData>({
@@ -296,6 +297,18 @@ export default function TestEditorClient({ topicSlug, testSlug }: Props) {
 				const newTopicSlug = data.test.topicSlug || topics.find((t) => t.id === form.topicId)?.slug
 				if (newTopicSlug !== topicSlug || form.slug !== testSlug) {
 					router.replace(`/admin/tests/${newTopicSlug}/${form.slug}`)
+				}
+
+				// If backend moved assets after rename/topic change, refresh test data to update references
+				if (data.assetsMoved === true) {
+					try {
+						await mutateTest()
+					} catch (e) {
+						console.warn('Failed to revalidate test data after assets moved', e)
+					}
+				} else if (data.assetsMoved === false) {
+					// Non-blocking warning for client-visible stale links
+					toast.warning('Изображения не были перемещены — проверьте ссылки на вложения')
 				}
 			}
 		} catch (err) {

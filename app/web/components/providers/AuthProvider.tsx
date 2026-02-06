@@ -41,7 +41,20 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
 async function fetchMeOnce(): Promise<Me | null> {
 	try {
-		const r = await fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' })
+		let r = await fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' })
+		// Если access token истёк — попробуем обменять refresh token
+		if (r.status === 401) {
+			try {
+				const rf = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
+				if (rf.ok) {
+					// повторяем запрос к /me после успешного refresh
+					r = await fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' })
+				}
+			} catch {
+				// ignore
+			}
+		}
+
 		if (!r.ok) return null
 		const j = await r.json()
 		if (!j?.ok || !j?.user?.id) return null

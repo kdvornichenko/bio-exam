@@ -4,6 +4,7 @@
 import { Router } from 'express'
 
 import authRouter from './auth/index.js'
+import refreshRouter from './auth/refresh.js'
 import rbacRouter from './rbac/index.js'
 import sidebarRouter from './sidebar/index.js'
 import testsRouter from './tests/index.js'
@@ -14,6 +15,7 @@ const router = Router()
 
 router.use('/users', usersRouter)
 router.use('/auth', authRouter)
+router.use('/auth/refresh', refreshRouter)
 router.use('/rbac', rbacRouter)
 router.use('/sidebar', sidebarRouter)
 router.use('/tests', testsRouter)

@@ -1,8 +1,13 @@
 /**
  * API роуты для управления тестами
  */
+import crypto from 'crypto'
+import fs from 'fs'
+import path from 'path'
+
 import { and, asc, count, eq, inArray, sql } from 'drizzle-orm'
 import { Router } from 'express'
+import multer from 'multer'
 
 import { db } from '../../db/index.js'
 import { answerKeys, questions, tests, topics } from '../../db/schema.js'
@@ -668,6 +673,21 @@ router.post(
 				return { test: updatedTest, questions: updatedQuestions, toDelete }
 			})
 
+			// После транзакции: если поменялись тема или slug, пробуем переместить директорию с ассетами
+			let assetsMoved: boolean | undefined = undefined
+			const oldTopicSlug = oldTopic?.slug
+			if (oldTopicSlug && (oldTopicSlug !== topic.slug || existingTest.slug !== data.slug)) {
+				const oldTestPath = storageService.getTestPath(oldTopicSlug, existingTest.slug)
+				const newTestPath = storageService.getTestPath(topic.slug, data.slug)
+				try {
+					await storageService.moveDirectory(oldTestPath, newTestPath)
+					assetsMoved = true
+				} catch (err) {
+					console.error('[tests] Failed to move assets directory:', err)
+					assetsMoved = false
+				}
+			}
+
 			// Очищаем старые файлы удалённых вопросов
 			const filesToDelete: string[] = []
 			for (const q of result.toDelete) {
@@ -710,7 +730,97 @@ router.post(
 				updatedAt: new Date().toISOString(),
 			})
 
-			res.json({ test: { ...result.test, topicSlug: topic.slug } })
+			// Удаляем неиспользуемые файлы в папке assets (garbage collection)
+			try {
+				const referenced = new Set<string>()
+
+				// собираем тексты из вопросов (текущие сохранённые тексты)
+				for (const q of result.questions) {
+					if (q.promptText) {
+						const txt = q.promptText as string
+						const re = new RegExp(`${testPath}/assets/([^\)\"'\\s]+)`, 'g')
+						let m: RegExpExecArray | null
+						while ((m = re.exec(txt)) !== null) {
+							referenced.add(`${testPath}/assets/${m[1]}`)
+						}
+						// Also match public uploads path
+						const pubRe = new RegExp(`/uploads/tests/${topic.slug}/${data.slug}/assets/([^\)\"'\\s]+)`, 'g')
+						while ((m = pubRe.exec(txt)) !== null) {
+							referenced.add(`${testPath}/assets/${m[1]}`)
+						}
+					}
+					if (q.explanationText) {
+						const txt = q.explanationText as string
+						const re2 = new RegExp(`${testPath}/assets/([^\)\"'\\s]+)`, 'g')
+						let m: RegExpExecArray | null
+						while ((m = re2.exec(txt)) !== null) {
+							referenced.add(`${testPath}/assets/${m[1]}`)
+						}
+						const pubRe2 = new RegExp(`/uploads/tests/${topic.slug}/${data.slug}/assets/([^\)\"'\\s]+)`, 'g')
+						while ((m = pubRe2.exec(txt)) !== null) {
+							referenced.add(`${testPath}/assets/${m[1]}`)
+						}
+					}
+				}
+
+				// Получаем список фактических файлов в assets
+				let actualFiles: string[] = []
+				if (storageService.isConfigured()) {
+					actualFiles = await storageService.listFilesRecursive(`${testPath}/assets`)
+				} else {
+					// local fallback: list files under web/public/uploads/tests/{topic}/{test}/assets
+					const localDir = path.join(process.cwd(), `../web/public/uploads/tests/${topic.slug}/${data.slug}/assets`)
+					if (fs.existsSync(localDir)) {
+						const walk: string[] = []
+						const stack = [localDir]
+						while (stack.length) {
+							const cur = stack.pop()!
+							for (const name of fs.readdirSync(cur)) {
+								const full = path.join(cur, name)
+								const stat = fs.statSync(full)
+								if (stat.isDirectory()) stack.push(full)
+								else {
+									// convert to storage path
+									const rel = path.relative(path.join(process.cwd(), '../web/public'), full).replace(/\\/g, '/')
+									// rel like uploads/tests/{topic}/{test}/assets/... -> map to topics/{topic}/{test}/assets/...
+									const parts = rel.split('/')
+									const idx = parts.indexOf('uploads')
+									if (idx !== -1 && parts[idx+1] === 'tests') {
+										const tslug = parts[idx+2]
+										const testslug = parts[idx+3]
+										const rest = parts.slice(idx+4).join('/')
+										walk.push(`topics/${tslug}/${testslug}/${rest}`)
+									}
+								}
+							}
+						}
+						actualFiles = walk
+					}
+				}
+
+				// Определяем неиспользуемые файлы
+				const toRemove = actualFiles.filter((f) => !referenced.has(f))
+				if (toRemove.length > 0) {
+					if (storageService.isConfigured()) {
+						await storageService.deleteFiles(toRemove)
+					} else {
+						for (const f of toRemove) {
+							// map storage path topics/{topic}/{test}/... -> web/public/uploads/tests/{topic}/{test}/...
+							const parts = f.split('/')
+							if (parts[0] === 'topics' && parts.length >= 3) {
+								const local = path.join(process.cwd(), '../web/public/uploads/tests', parts[1], parts[2], ...parts.slice(3))
+								if (fs.existsSync(local)) fs.unlinkSync(local)
+							}
+						}
+					}
+				}
+			} catch (gcErr) {
+				console.error('[tests] Failed to garbage-collect assets:', gcErr)
+			}
+
+			const resp: any = { test: { ...result.test, topicSlug: topic.slug } }
+			if (typeof assetsMoved !== 'undefined') resp.assetsMoved = assetsMoved
+			res.json(resp)
 		} catch (e) {
 			next(e)
 		}
@@ -743,6 +853,65 @@ router.delete('/:id', validateUUID('id'), sessionRequired(), requirePerm('tests'
 		next(e)
 	}
 })
+
+// POST /api/tests/:id/assets - загрузка изображений, сохраняем в папку assets рядом с тестом
+const upload = multer({
+	storage: multer.memoryStorage(),
+	limits: {
+		fileSize: 5 * 1024 * 1024, // 5MB
+	},
+	fileFilter: (_req, file, cb) => {
+		const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+		if (allowedMimes.includes(file.mimetype)) {
+			cb(null, true)
+		} else {
+			cb(new Error('Недопустимый тип файла. Разрешены только изображения (JPEG, PNG, GIF, WebP)'))
+		}
+	},
+})
+
+router.post(
+	'/:id/assets',
+	validateUUID('id'),
+	sessionRequired(),
+	requirePerm('tests', 'write'),
+	upload.single('file') as any,
+	async (req, res, next) => {
+		try {
+			const file = req.file as Express.Multer.File | undefined
+			if (!file || !file.buffer) return res.status(400).json({ error: 'No file uploaded' })
+
+			const testId = req.params.id as string
+			const test = await db.query.tests.findFirst({ where: eq(tests.id, testId) })
+			if (!test) return res.status(404).json({ error: ERROR_MESSAGES.TEST_NOT_FOUND })
+
+			const topic = await db.query.topics.findFirst({ where: eq(topics.id, test.topicId) })
+			if (!topic) return res.status(404).json({ error: ERROR_MESSAGES.TOPIC_NOT_FOUND })
+
+			const testPath = storageService.getTestPath(topic.slug, test.slug) // topics/{topic}/{test}
+			const ext = path.extname((file.originalname || '').toLowerCase()) || '.png'
+			const filename = `${crypto.randomBytes(12).toString('hex')}${ext}`
+			const storagePath = `${testPath}/assets/${filename}`
+
+			if (storageService.isConfigured()) {
+				// Upload to Supabase (or configured storage)
+				await storageService.uploadBuffer(storagePath, file.buffer, file.mimetype)
+				const publicUrl = storageService.getPublicUrl(storagePath)
+				return res.status(201).json({ url: publicUrl || storagePath })
+			} else {
+				// Local disk fallback: save under web/public/uploads/tests/{topicSlug}/{testSlug}/assets
+				const UPLOAD_DIR = path.join(process.cwd(), `../web/public/uploads/tests/${topic.slug}/${test.slug}/assets`)
+				fs.mkdirSync(UPLOAD_DIR, { recursive: true })
+				const filePath = path.join(UPLOAD_DIR, filename)
+				fs.writeFileSync(filePath, file.buffer)
+				const publicUrl = `/uploads/tests/${topic.slug}/${test.slug}/assets/${filename}`
+				return res.status(201).json({ url: publicUrl })
+			}
+		} catch (e) {
+			next(e)
+		}
+	}
+)
 
 // =============================================================================
 // Export

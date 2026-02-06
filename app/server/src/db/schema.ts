@@ -266,6 +266,25 @@ export const answerKeys = pgTable(
 	})
 )
 
+/** Refresh tokens for session management */
+export const refreshTokens = pgTable(
+	'refresh_tokens',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		userId: uuid('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+		tokenHash: text('token_hash').notNull(),
+		expiresAt: timestamp('expires_at').notNull(),
+		revokedAt: timestamp('revoked_at'),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+		createdByIp: text('created_by_ip'),
+	},
+	(t) => ({
+		tokenHashIdx: index('refresh_tokens_token_hash_idx').on(t.tokenHash),
+	})
+)
+
 // =============================================================================
 // RELATIONS
 // =============================================================================

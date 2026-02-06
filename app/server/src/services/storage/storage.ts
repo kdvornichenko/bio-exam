@@ -4,6 +4,9 @@
  */
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 
+import fs from 'fs'
+import path from 'path'
+
 import archiver from 'archiver'
 
 const SUPABASE_URL = process.env.SUPABASE_URL
@@ -152,6 +155,38 @@ export class StorageService {
 		})
 	}
 
+	/** Upload a binary Buffer (image, etc.) to storage */
+	async uploadBuffer(path: string, buffer: Buffer, contentType = 'application/octet-stream'): Promise<void> {
+		const client = getClient()
+		if (!client) {
+			throw new Error('[StorageService] Cannot upload: Supabase not configured')
+		}
+
+		await this.withRetry(async () => {
+			const { error } = await client.storage.from(BUCKET).upload(path, buffer, {
+				contentType,
+				upsert: true,
+			})
+
+			if (error) {
+				console.error(`[StorageService] FAILED to upload buffer ${path}:`, error)
+				throw new Error(`Storage error: ${error.message}`)
+			}
+		})
+	}
+
+	/** Get public URL for a stored object (depends on bucket policy) */
+	getPublicUrl(path: string): string {
+		const client = getClient()
+		if (!client) return ''
+		try {
+			const res = client.storage.from(BUCKET).getPublicUrl(path)
+			return res?.data?.publicUrl ?? ''
+		} catch (e) {
+			return ''
+		}
+	}
+
 	/**
 	 * Записывает JSON файл в Storage
 	 * Включает автоматический retry с экспоненциальной задержкой
@@ -262,6 +297,100 @@ export class StorageService {
 		const files = await this.listFilesRecursive(prefix)
 		if (files.length > 0) {
 			await this.deleteFiles(files)
+		}
+	}
+
+	/**
+	 * Перемещает все файлы из одного префикса в другой
+	 * Работает и для Supabase, и для локального дискового fallback
+	 * @param oldPrefix старый префикс (например "topics/oldTopic/oldTest")
+	 * @param newPrefix новый префикс
+	 */
+	async moveDirectory(oldPrefix: string, newPrefix: string): Promise<void> {
+		if (!oldPrefix || !newPrefix) {
+			throw new Error('[StorageService] moveDirectory: both oldPrefix and newPrefix are required')
+		}
+
+		const client = getClient()
+		// Если настроен Supabase - работаем через API
+		if (client) {
+			// Получаем список всех файлов под oldPrefix
+			const files = await this.listFilesRecursive(oldPrefix)
+			if (files.length === 0) return // ничего перемещать
+
+			// Скачиваем -> загружаем в новый путь
+			for (const filePath of files) {
+				const newPath = filePath.startsWith(oldPrefix)
+					? newPrefix + filePath.slice(oldPrefix.length)
+					: filePath.replace(oldPrefix, newPrefix)
+
+				// Скачиваем с retry
+				const { buffer, contentType } = await this.withRetry(async () => {
+					const { data, error } = await client.storage.from(BUCKET).download(filePath)
+					if (error || !data) {
+						throw error ?? new Error(`Failed to download ${filePath}`)
+					}
+					const buf = Buffer.from(await (data as any).arrayBuffer())
+					// Попробуем получить content-type из объекта data (Blob.type) если есть
+					const ct = (data as any)?.type || 'application/octet-stream'
+					return { buffer: buf, contentType: ct }
+				})
+
+				// Загружаем в новый путь (upsert)
+				await this.uploadBuffer(newPath, buffer, contentType)
+			}
+
+			// После успешной копии удаляем старые
+			await this.withRetry(async () => {
+				await this.deleteFiles(files)
+			})
+			return
+		}
+
+		// Локальный диск: переводим пути в web/public/uploads
+		// Преобразование: topics/{topic}/{test}/... -> web/public/uploads/tests/{topic}/{test}/...
+		const files = await this.listFilesRecursive(oldPrefix)
+		if (files.length === 0) return
+
+		for (const storagePath of files) {
+			const parts = storagePath.split('/')
+			let relParts: string[]
+			if (parts[0] === 'topics' && parts.length >= 3) {
+				// topics/{topic}/{test}/...
+				relParts = ['../web/public/uploads/tests', parts[1], parts[2], ...parts.slice(3)]
+			} else {
+				// generic fallback -> ../web/public/uploads/{...}
+				relParts = ['../web/public/uploads', ...parts]
+			}
+
+			const src = path.join(process.cwd(), ...relParts)
+			// Вычисляем destination по newPrefix
+			const newStoragePath = storagePath.startsWith(oldPrefix)
+				? newPrefix + storagePath.slice(oldPrefix.length)
+				: storagePath.replace(oldPrefix, newPrefix)
+			const newParts = newStoragePath.split('/')
+			let destRelParts: string[]
+			if (newParts[0] === 'topics' && newParts.length >= 3) {
+				destRelParts = ['../web/public/uploads/tests', newParts[1], newParts[2], ...newParts.slice(3)]
+			} else {
+				destRelParts = ['../web/public/uploads', ...newParts]
+			}
+			const dest = path.join(process.cwd(), ...destRelParts)
+
+			// Создаём папку назначения
+			fs.mkdirSync(path.dirname(dest), { recursive: true })
+
+			try {
+				fs.renameSync(src, dest)
+			} catch (e: any) {
+				// Если переезд между устройствами - fallback: copy + unlink
+				if (e && e.code === 'EXDEV') {
+					fs.copyFileSync(src, dest)
+					fs.unlinkSync(src)
+				} else {
+					throw new Error(`[StorageService] Failed to move local file ${src} -> ${dest}: ${e?.message || e}`)
+				}
+			}
 		}
 	}
 

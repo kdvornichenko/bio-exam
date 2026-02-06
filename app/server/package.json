@@ -20,7 +20,7 @@
 		"bootstrap:admin": "tsx src/scripts/bootstrap-admin.ts"
 	},
 	"dependencies": {
-		"@bio-exam/rbac": "*",
+		"@bio-exam/rbac": "workspace:*",
 		"@supabase/supabase-js": "^2.93.1",
 		"archiver": "^7.0.1",
 		"bcryptjs": "^3.0.2",

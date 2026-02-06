@@ -2,16 +2,17 @@
  * In-memory rate limiter для auth эндпоинтов
  * Защита от брутфорс-атак на логин
  */
-
 import type { Request, Response, NextFunction } from 'express'
-import { ApiError } from '../lib/errors.js'
+
 import { ERROR_MESSAGES } from '../lib/constants.js'
+import { ApiError } from '../lib/errors.js'
 
 interface RateLimitEntry {
 	count: number
 	resetAt: number
 }
 
+// In-memory fallback store
 const store = new Map<string, RateLimitEntry>()
 
 // Интервал очистки - удаляем истёкшие записи каждые 5 минут
@@ -25,6 +26,8 @@ setInterval(() => {
 		}
 	}
 }, CLEANUP_INTERVAL_MS)
+
+// No external store — in-memory Map is used (sufficient for single-instance personal deployment)
 
 /**
  * Извлекает IP клиента из запроса
@@ -70,12 +73,15 @@ export function rateLimiter(options: RateLimiterOptions = {}) {
 		const ip = getClientIp(req)
 		const key = keyPrefix ? `${keyPrefix}:${ip}` : ip
 		const now = Date.now()
-
+		// Memory-only implementation (suitable for single-instance personal deployment)
 		const entry = store.get(key)
 
 		if (!entry || entry.resetAt <= now) {
 			// Первый запрос или окно истекло - создаём новую запись
 			store.set(key, { count: 1, resetAt: now + windowMs })
+			res.setHeader('X-RateLimit-Limit', String(maxAttempts))
+			res.setHeader('X-RateLimit-Remaining', String(maxAttempts - 1))
+			res.setHeader('X-RateLimit-Reset', String(Math.ceil((now + windowMs) / 1000)))
 			return next()
 		}
 

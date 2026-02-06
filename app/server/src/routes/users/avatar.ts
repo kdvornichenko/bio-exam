@@ -10,6 +10,7 @@ import sharp from 'sharp'
 import { db } from '../../db/index.js'
 import { users } from '../../db/schema.js'
 import { sessionRequired } from '../../middleware/auth/session.js'
+import { storageService } from '../../services/storage/storage.js'
 
 const router = Router()
 
@@ -28,21 +29,25 @@ function ensureUploadDir() {
 }
 
 // Настройка multer для загрузки файлов
-const storage = multer.diskStorage({
-	destination: (_req, _file, cb) => {
-		ensureUploadDir()
-		cb(null, UPLOAD_DIR)
-	},
-	filename: (_req, file, cb) => {
-		// Генерируем уникальное имя файла
-		const uniqueSuffix = crypto.randomBytes(16).toString('hex')
-		const ext = path.extname(file.originalname)
-		cb(null, `${uniqueSuffix}${ext}`)
-	},
-})
+// Если Supabase сконфигурирован — используем memoryStorage и загружаем в Storage
+const useSupabase = storageService.isConfigured()
+const multerStorage = useSupabase
+	? multer.memoryStorage()
+	: multer.diskStorage({
+			destination: (_req, _file, cb) => {
+				ensureUploadDir()
+				cb(null, UPLOAD_DIR)
+			},
+			filename: (_req, file, cb) => {
+				// Генерируем уникальное имя файла
+				const uniqueSuffix = crypto.randomBytes(16).toString('hex')
+				const ext = path.extname(file.originalname)
+				cb(null, `${uniqueSuffix}${ext}`)
+			},
+		})
 
 const upload = multer({
-	storage,
+	storage: multerStorage,
 	limits: {
 		fileSize: 5 * 1024 * 1024, // 5MB
 	},
@@ -112,7 +117,10 @@ async function createCroppedImage(
 	if (top + cropHeight > metadata.height) cropHeight = metadata.height - top
 
 	// Извлекаем нужную область и изменяем размер
-	await image.extract({ left, top, width: cropWidth, height: cropHeight }).resize(outputSize, outputSize).toFile(croppedPath)
+	await image
+		.extract({ left, top, width: cropWidth, height: cropHeight })
+		.resize(outputSize, outputSize)
+		.toFile(croppedPath)
 
 	// Возвращаем относительный путь
 	return `/uploads/avatars/${croppedFilename}`
@@ -126,14 +134,8 @@ router.post('/', sessionRequired(), upload.single('avatar') as any, async (req, 
 			return res.status(401).json({ error: 'Не авторизован' })
 		}
 
-		// Временно отключаем загрузку аватаров в production на Vercel
-		// TODO: Интегрировать S3/Cloudinary/Vercel Blob для хранения файлов
-		if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
-			return res.status(501).json({
-				error: 'Загрузка аватаров временно недоступна',
-				message: 'Avatar upload is not available in production. Please use S3/Cloudinary integration.',
-			})
-		}
+		// Если Supabase настроен — загружаем файлы в Supabase Storage
+		const supabaseEnabled = storageService.isConfigured()
 
 		// Получаем параметры кропа из body
 		const cropX = req.body.cropX ? parseFloat(req.body.cropX) : null
@@ -142,7 +144,7 @@ router.post('/', sessionRequired(), upload.single('avatar') as any, async (req, 
 		const cropHeight = req.body.cropHeight ? parseFloat(req.body.cropHeight) : null
 		const cropZoom = req.body.cropZoom ? parseFloat(req.body.cropZoom) : null
 		const cropRotation = req.body.cropRotation ? parseFloat(req.body.cropRotation) : null
-		
+
 		// Новые параметры view
 		const cropViewX = req.body.cropViewX ? parseFloat(req.body.cropViewX) : null
 		const cropViewY = req.body.cropViewY ? parseFloat(req.body.cropViewY) : null
@@ -152,57 +154,126 @@ router.post('/', sessionRequired(), upload.single('avatar') as any, async (req, 
 
 		if (req.file) {
 			// Новый файл загружен - обновляем аватар
-			avatarUrl = `/uploads/avatars/${req.file.filename}`
+			if (supabaseEnabled && (req.file as any).buffer) {
+				// Upload to Supabase storage
+				const originalBuffer: Buffer = (req.file as any).buffer
+				const ext = path.extname((req.file as any).originalname) || '.png'
+				const baseName = `${userId}/${crypto.randomBytes(12).toString('hex')}${ext}`
+				const originalPath = `avatars/${baseName}`
 
-			// Получаем старый аватар пользователя
-			const user = await db
-				.select({ avatar: users.avatar, avatarCropped: users.avatarCropped })
-				.from(users)
-				.where(eq(users.id, userId))
-				.limit(1)
+				// remove old files from storage (best effort)
+				const user = await db
+					.select({ avatar: users.avatar, avatarCropped: users.avatarCropped })
+					.from(users)
+					.where(eq(users.id, userId))
+					.limit(1)
+				if (user.length > 0) {
+					// TODO: optionally delete previous files in Supabase if stored with known paths
+				}
 
-			// Удаляем старые файлы аватара, если они существуют
-			if (user.length > 0) {
-				if (user[0].avatar) {
-					const oldAvatarPath = path.join(process.cwd(), '../web/public', user[0].avatar)
-					if (fs.existsSync(oldAvatarPath)) {
-						fs.unlinkSync(oldAvatarPath)
+				// Upload original
+				await storageService.uploadBuffer(originalPath, originalBuffer, (req.file as any).mimetype)
+				const publicUrl = storageService.getPublicUrl(originalPath)
+				avatarUrl = publicUrl || `/uploads/avatars/${baseName}`
+
+				// Create cropped image if params present
+				if (cropX !== null && cropY !== null && cropWidth !== null && cropHeight !== null && cropRotation !== null) {
+					const image = sharp(originalBuffer)
+					const metadata = await image.metadata()
+					if (!metadata.width || !metadata.height) throw new Error('Не удалось получить размеры изображения')
+
+					let img = image
+					if (cropRotation !== 0) {
+						const rotated = await img
+							.rotate(cropRotation, { background: { r: 255, g: 255, b: 255, alpha: 0 } })
+							.toBuffer()
+						img = sharp(rotated)
+					}
+
+					const left = Math.max(0, Math.round(cropX))
+					const top = Math.max(0, Math.round(cropY))
+					const cW = Math.round(cropWidth)
+					const cH = Math.round(cropHeight)
+					const outputSize = 256
+
+					const croppedBuffer = await img
+						.extract({ left, top, width: cW, height: cH })
+						.resize(outputSize, outputSize)
+						.toBuffer()
+					const croppedPath = `avatars/${userId}/${crypto.randomBytes(12).toString('hex')}_cropped${ext}`
+					await storageService.uploadBuffer(croppedPath, croppedBuffer, 'image/png')
+					avatarCroppedUrl =
+						storageService.getPublicUrl(croppedPath) || `/uploads/avatars/${path.basename(croppedPath)}`
+				}
+
+				// Update DB
+				await db
+					.update(users)
+					.set({
+						avatar: avatarUrl,
+						avatarCropped: avatarCroppedUrl,
+						avatarCropX: cropX,
+						avatarCropY: cropY,
+						avatarCropZoom: cropZoom,
+						avatarCropRotation: cropRotation,
+						avatarCropViewX: cropViewX,
+						avatarCropViewY: cropViewY,
+					} as any)
+					.where(eq(users.id, userId))
+			} else {
+				// Local disk path flow (unchanged)
+				avatarUrl = `/uploads/avatars/${req.file.filename}`
+
+				// Получаем старый аватар пользователя
+				const user = await db
+					.select({ avatar: users.avatar, avatarCropped: users.avatarCropped })
+					.from(users)
+					.where(eq(users.id, userId))
+					.limit(1)
+
+				// Удаляем старые файлы аватара, если они существуют
+				if (user.length > 0) {
+					if (user[0].avatar) {
+						const oldAvatarPath = path.join(process.cwd(), '../web/public', user[0].avatar)
+						if (fs.existsSync(oldAvatarPath)) {
+							fs.unlinkSync(oldAvatarPath)
+						}
+					}
+					if (user[0].avatarCropped) {
+						const oldCroppedPath = path.join(process.cwd(), '../web/public', user[0].avatarCropped)
+						if (fs.existsSync(oldCroppedPath)) {
+							fs.unlinkSync(oldCroppedPath)
+						}
 					}
 				}
-				if (user[0].avatarCropped) {
-					const oldCroppedPath = path.join(process.cwd(), '../web/public', user[0].avatarCropped)
-					if (fs.existsSync(oldCroppedPath)) {
-						fs.unlinkSync(oldCroppedPath)
-					}
+
+				// Создаем кропнутое изображение, если есть параметры кропа
+				if (cropX !== null && cropY !== null && cropWidth !== null && cropHeight !== null && cropRotation !== null) {
+					const originalPath = path.join(process.cwd(), '../web/public', avatarUrl)
+					avatarCroppedUrl = await createCroppedImage(originalPath, {
+						x: cropX,
+						y: cropY,
+						width: cropWidth,
+						height: cropHeight,
+						rotation: cropRotation,
+					})
 				}
-			}
 
-			// Создаем кропнутое изображение, если есть параметры кропа
-			if (cropX !== null && cropY !== null && cropWidth !== null && cropHeight !== null && cropRotation !== null) {
-				const originalPath = path.join(process.cwd(), '../web/public', avatarUrl)
-				avatarCroppedUrl = await createCroppedImage(originalPath, {
-					x: cropX,
-					y: cropY,
-					width: cropWidth,
-					height: cropHeight,
-					rotation: cropRotation,
-				})
+				// Обновляем путь к аватару и параметры кропа
+				await db
+					.update(users)
+					.set({
+						avatar: avatarUrl,
+						avatarCropped: avatarCroppedUrl,
+						avatarCropX: cropX,
+						avatarCropY: cropY,
+						avatarCropZoom: cropZoom,
+						avatarCropRotation: cropRotation,
+						avatarCropViewX: cropViewX,
+						avatarCropViewY: cropViewY,
+					})
+					.where(eq(users.id, userId))
 			}
-
-			// Обновляем путь к аватару и параметры кропа
-			await db
-				.update(users)
-				.set({
-					avatar: avatarUrl,
-					avatarCropped: avatarCroppedUrl,
-					avatarCropX: cropX,
-					avatarCropY: cropY,
-					avatarCropZoom: cropZoom,
-					avatarCropRotation: cropRotation,
-					avatarCropViewX: cropViewX,
-					avatarCropViewY: cropViewY,
-				})
-				.where(eq(users.id, userId))
 		} else {
 			// Файл не загружен - обновляем только параметры кропа
 			const user = await db

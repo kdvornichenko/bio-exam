@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url'
 
 import { config as dotenv } from 'dotenv'
 
+import { DEFAULTS } from '../lib/constants.js'
+
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
@@ -56,6 +58,20 @@ if (process.env.DEBUG_ENV === '1') {
 	console.log(`[env] loaded from: ${loadedFrom ?? 'none'}`)
 	// eslint-disable-next-line no-console
 	console.log(`[env] DATABASE_URL: ${safeDsn(process.env.DATABASE_URL)}`)
+}
+
+// Валидация обязательных переменных окружения в production
+if (process.env.NODE_ENV === 'production') {
+	const missing: string[] = []
+	if (!process.env.DATABASE_URL) missing.push('DATABASE_URL')
+	if (!process.env.AUTH_JWT_SECRET || process.env.AUTH_JWT_SECRET === DEFAULTS.JWT_SECRET)
+		missing.push('AUTH_JWT_SECRET')
+
+	if (missing.length > 0) {
+		// eslint-disable-next-line no-console
+		console.error('[env] Missing required env vars for production:', missing.join(', '))
+		throw new Error(`Missing required env vars for production: ${missing.join(', ')}`)
+	}
 }
 
 export const ENV_LOADED_FROM = loadedFrom

@@ -21,9 +21,10 @@ interface Props {
 	question: Question
 	onSave: (question: Question) => void
 	onCancel: () => void
+	docPath?: string
 }
 
-export default function QuestionEditor({ question, onSave, onCancel }: Props) {
+export default function QuestionEditor({ question, onSave, onCancel, docPath }: Props) {
 	const [form, setForm] = useState<Question>({ ...question })
 
 	const handlePromptMdxChange = useCallback((mdx: string) => {
@@ -107,6 +108,7 @@ export default function QuestionEditor({ question, onSave, onCancel }: Props) {
 									onMdxChange={handlePromptMdxChange}
 									placeholder="Введите текст вопроса..."
 									preset="full"
+									docPath={docPath}
 								/>
 							</div>
 
@@ -117,6 +119,7 @@ export default function QuestionEditor({ question, onSave, onCancel }: Props) {
 									onMdxChange={handleExplanationMdxChange}
 									placeholder="Пояснение, которое будет показано после ответа..."
 									preset="full"
+									docPath={docPath}
 								/>
 							</div>
 						</CardContent>

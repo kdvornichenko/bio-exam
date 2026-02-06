@@ -2,13 +2,11 @@
  * Точка входа для локальной разработки.
  * Запускает Express сервер на указанном порту.
  */
-import pino from 'pino'
-
 import app from './app.js'
 import { pgPool } from './db/index.js'
 import { DEFAULTS } from './lib/constants.js'
+import logger from './lib/logger.js'
 
-const logger = pino({ level: process.env.LOG_LEVEL ?? DEFAULTS.LOG_LEVEL })
 const PORT = Number(process.env.PORT ?? DEFAULTS.PORT)
 
 const server = app.listen(PORT, () => {

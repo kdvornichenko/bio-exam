@@ -9,12 +9,12 @@ import cors from 'cors'
 import express from 'express'
 import type { ErrorRequestHandler, Request } from 'express'
 import helmet from 'helmet'
-import pino from 'pino'
-import pinoHttp from 'pino-http'
 
 import './config/env.js'
 import { ApiError, isApiError } from './lib/errors.js'
+import { pinoHttpMiddleware } from './lib/logger.js'
 import { sessionOptional } from './middleware/auth/session.js'
+import requestId from './middleware/requestId.js'
 import healthRouter from './routes/db/health.js'
 import apiRouter from './routes/index.js'
 
@@ -28,19 +28,9 @@ app.use(
 	})
 )
 
-// --- Логирование
-const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' })
-app.use(
-	pinoHttp({
-		logger,
-		autoLogging: false,
-		customLogLevel: (_req, res, err) => {
-			if (res.statusCode >= 500 || err) return 'error'
-			if (res.statusCode >= 400) return 'warn'
-			return 'info'
-		},
-	})
-)
+// --- Request id + логирование
+app.use(requestId)
+app.use(pinoHttpMiddleware)
 
 // --- CORS
 const allowlist = (process.env.ALLOWED_ORIGIN ?? '')
@@ -48,13 +38,29 @@ const allowlist = (process.env.ALLOWED_ORIGIN ?? '')
 	.map((s) => s.trim())
 	.filter(Boolean)
 
+const isDev = process.env.NODE_ENV !== 'production'
+
 app.use(
 	cors({
 		origin: (origin, cb) => {
-			// Разрешить все localhost origins в development
-			if (!origin || allowlist.length === 0 || allowlist.includes(origin)) return cb(null, true)
-			// Разрешить любой порт на localhost
-			if (origin.startsWith('http://localhost:')) return cb(null, true)
+			// Запросы без Origin (curl, server-to-server) — позволяем
+			if (!origin) return cb(null, true)
+
+			// В development: если allowlist пустой — разрешаем localhost и любые origin для удобства
+			if (isDev) {
+				if (allowlist.length === 0) return cb(null, true)
+				if (allowlist.includes(origin)) return cb(null, true)
+				if (origin.startsWith('http://localhost:')) return cb(null, true)
+				return cb(new Error('Not allowed by CORS'))
+			}
+
+			// В production: требуем явного ALLOWED_ORIGIN; пустой allowlist — ошибка конфигурации
+			if (!isDev) {
+				if (allowlist.length === 0) return cb(new Error('CORS not configured: ALLOWED_ORIGIN is empty'))
+				if (allowlist.includes(origin)) return cb(null, true)
+				return cb(new Error('Not allowed by CORS'))
+			}
+
 			return cb(new Error('Not allowed by CORS'))
 		},
 		credentials: true,
@@ -116,7 +122,12 @@ const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
 		message = err instanceof Error ? err.message : 'Internal Server Error'
 	} else {
 		status = 500
-		message = process.env.NODE_ENV === 'production' ? 'Internal Server Error' : (err instanceof Error ? err.message : 'Internal Server Error')
+		message =
+			process.env.NODE_ENV === 'production'
+				? 'Internal Server Error'
+				: err instanceof Error
+					? err.message
+					: 'Internal Server Error'
 	}
 
 	res.status(status).json({
