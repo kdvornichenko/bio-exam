@@ -26,22 +26,32 @@ export const QuestionSchema = z.object({
 	correct: z.union([z.string(), z.array(z.string()), z.record(z.string(), z.string())]),
 })
 
-export const SaveTestSchema = z.object({
-	topicId: z.string().uuid(),
-	title: z.string().min(1).max(200),
-	slug: z
-		.string()
-		.regex(/^[a-z0-9-]+$/)
-		.min(2)
-		.max(100),
-	description: z.string().optional().nullable(),
-	isPublished: z.boolean().default(false),
-	showCorrectAnswer: z.boolean().default(true),
-	timeLimitMinutes: z.number().int().positive().optional().nullable(),
-	passingScore: z.number().min(0).max(100).optional().nullable(),
-	order: z.number().int().min(0).default(0),
-	questions: z.array(QuestionSchema).min(1),
-})
+export const SaveTestSchema = z
+	.object({
+		topicId: z.string().uuid(),
+		title: z.string().min(1).max(200),
+		slug: z
+			.string()
+			.regex(/^[a-z0-9-]+$/)
+			.min(2)
+			.max(100),
+		description: z.string().optional().nullable(),
+		isPublished: z.boolean().default(false),
+		showCorrectAnswer: z.boolean().default(true),
+		timeLimitMinutes: z.number().int().positive().optional().nullable(),
+		passingScore: z.number().min(0).max(100).optional().nullable(),
+		order: z.number().int().min(0).default(0),
+		questions: z.array(QuestionSchema),
+	})
+	.superRefine((value, ctx) => {
+		if (value.isPublished && value.questions.length === 0) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ['questions'],
+				message: 'Для публикации добавьте хотя бы один вопрос',
+			})
+		}
+	})
 
 export const TopicSchema = z.object({
 	slug: z

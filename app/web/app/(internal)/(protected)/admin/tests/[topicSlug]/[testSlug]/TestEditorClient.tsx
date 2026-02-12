@@ -213,8 +213,8 @@ export default function TestEditorClient({ topicSlug, testSlug }: Props) {
 			toast.error('Введите slug')
 			return
 		}
-		if (form.questions.length === 0) {
-			toast.error('Добавьте хотя бы один вопрос')
+		if (form.isPublished && form.questions.length === 0) {
+			toast.error('Для публикации добавьте хотя бы один вопрос')
 			return
 		}
 
