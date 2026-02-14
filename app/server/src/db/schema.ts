@@ -15,6 +15,8 @@ import {
 	real,
 	jsonb,
 } from 'drizzle-orm/pg-core'
+import type { TestScoringRules } from '../lib/tests/scoring.js'
+import type { QuestionTypeScoringRule, QuestionUiTemplate } from '../lib/tests/question-types.js'
 
 /** Тип открытия ссылки */
 export const linkTarget = pgEnum('link_target', ['_self', '_blank'])
@@ -172,8 +174,8 @@ export const sidebarItems = pgTable(
 // ТЕСТЫ
 // =============================================================================
 
-/** Тип вопроса */
-export const questionType = pgEnum('question_type', ['radio', 'checkbox', 'matching'])
+/** Legacy enum типов вопроса (оставлен для обратной совместимости миграций) */
+export const questionType = pgEnum('question_type', ['radio', 'checkbox', 'matching', 'short_answer', 'sequence'])
 
 /** Темы тестов */
 export const topics = pgTable(
@@ -209,6 +211,7 @@ export const tests = pgTable(
 		version: integer('version').notNull().default(1),
 		isPublished: boolean('is_published').notNull().default(false),
 		showCorrectAnswer: boolean('show_correct_answer').notNull().default(true),
+		scoringRules: jsonb('scoring_rules').$type<TestScoringRules>(),
 		timeLimitMinutes: integer('time_limit_minutes'),
 		passingScore: real('passing_score'),
 		order: integer('order').notNull().default(0),
@@ -223,6 +226,61 @@ export const tests = pgTable(
 	})
 )
 
+/** Глобальные настройки начисления баллов для тестов */
+export const testScoringSettings = pgTable('test_scoring_settings', {
+	id: text('id').primaryKey().default('global'),
+	rules: jsonb('rules').$type<TestScoringRules>().notNull(),
+	updatedAt: timestamp('updated_at').notNull().defaultNow(),
+	updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+})
+
+/** Справочник типов вопросов */
+export const questionTypes = pgTable(
+	'question_types',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		key: text('key').notNull(),
+		title: text('title').notNull(),
+		description: text('description'),
+		uiTemplate: text('ui_template').$type<QuestionUiTemplate>().notNull(),
+		validationSchema: jsonb('validation_schema'),
+		scoringRule: jsonb('scoring_rule').$type<QuestionTypeScoringRule>().notNull(),
+		isSystem: boolean('is_system').notNull().default(false),
+		isActive: boolean('is_active').notNull().default(true),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+		updatedAt: timestamp('updated_at').notNull().defaultNow(),
+		createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+		updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+	},
+	(t) => ({
+		keyUniq: uniqueIndex('question_types_key_uniq').on(t.key),
+		isActiveIdx: index('question_types_is_active_idx').on(t.isActive),
+	})
+)
+
+/** Переопределения типа вопроса для конкретного теста */
+export const testQuestionTypeOverrides = pgTable(
+	'test_question_type_overrides',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		testId: uuid('test_id')
+			.notNull()
+			.references(() => tests.id, { onDelete: 'cascade' }),
+		questionTypeKey: text('question_type_key').notNull(),
+		titleOverride: text('title_override'),
+		scoringRuleOverride: jsonb('scoring_rule_override').$type<QuestionTypeScoringRule>(),
+		isDisabled: boolean('is_disabled').notNull().default(false),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+		updatedAt: timestamp('updated_at').notNull().defaultNow(),
+		createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+		updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+	},
+	(t) => ({
+		testTypeUniq: uniqueIndex('test_question_type_overrides_test_type_uniq').on(t.testId, t.questionTypeKey),
+		testIdIdx: index('test_question_type_overrides_test_id_idx').on(t.testId),
+	})
+)
+
 /** Вопросы теста */
 export const questions = pgTable(
 	'questions',
@@ -231,7 +289,7 @@ export const questions = pgTable(
 		testId: uuid('test_id')
 			.notNull()
 			.references(() => tests.id, { onDelete: 'cascade' }),
-		type: questionType('type').notNull(),
+		type: text('type').notNull(),
 		order: integer('order').notNull().default(0),
 		points: real('points').notNull().default(1),
 		options: jsonb('options'), // для radio/checkbox: [{id, text}]
@@ -342,6 +400,38 @@ export const testsRelations = relations(tests, ({ one, many }) => ({
 	}),
 	questions: many(questions),
 	attempts: many(testAttempts),
+	questionTypeOverrides: many(testQuestionTypeOverrides),
+}))
+
+export const questionTypesRelations = relations(questionTypes, ({ one, many }) => ({
+	createdByUser: one(users, {
+		fields: [questionTypes.createdBy],
+		references: [users.id],
+		relationName: 'questionTypesCreatedByUser',
+	}),
+	updatedByUser: one(users, {
+		fields: [questionTypes.updatedBy],
+		references: [users.id],
+		relationName: 'questionTypesUpdatedByUser',
+	}),
+	testOverrides: many(testQuestionTypeOverrides),
+}))
+
+export const testQuestionTypeOverridesRelations = relations(testQuestionTypeOverrides, ({ one }) => ({
+	test: one(tests, {
+		fields: [testQuestionTypeOverrides.testId],
+		references: [tests.id],
+	}),
+	createdByUser: one(users, {
+		fields: [testQuestionTypeOverrides.createdBy],
+		references: [users.id],
+		relationName: 'testQuestionTypeOverridesCreatedByUser',
+	}),
+	updatedByUser: one(users, {
+		fields: [testQuestionTypeOverrides.updatedBy],
+		references: [users.id],
+		relationName: 'testQuestionTypeOverridesUpdatedByUser',
+	}),
 }))
 
 export const questionsRelations = relations(questions, ({ one, many }) => ({

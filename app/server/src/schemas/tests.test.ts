@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict'
 
+import { createDefaultTestScoringRules } from '../lib/tests/scoring.js'
 import { SaveTestSchema } from './tests.js'
 
 const basePayload = {
-	topicId: '11111111-1111-1111-1111-111111111111',
+	topicId: '11111111-1111-4111-8111-111111111111',
 	title: 'Черновик теста',
 	slug: 'chernovik-testa',
 	description: null,
 	isPublished: false,
 	showCorrectAnswer: true,
+	scoringRules: createDefaultTestScoringRules(),
 	timeLimitMinutes: null,
 	passingScore: null,
 	order: 0,
@@ -26,6 +28,58 @@ const radioQuestion = {
 	promptText: 'Какой вариант правильный?',
 	explanationText: null,
 	correct: 'a',
+}
+
+const shortAnswerQuestion = {
+	type: 'short_answer' as const,
+	order: 0,
+	points: 1,
+	options: null,
+	matchingPairs: null,
+	promptText: 'Введите термин',
+	explanationText: null,
+	correct: 'митоз',
+}
+
+const sequenceQuestion = {
+	type: 'sequence' as const,
+	order: 0,
+	points: 2,
+	options: null,
+	matchingPairs: null,
+	promptText: 'Укажите последовательность цифр',
+	explanationText: null,
+	correct: '2314',
+}
+
+const checkboxWithNumericIdsQuestion = {
+	type: 'checkbox' as const,
+	order: 0,
+	points: 2,
+	options: [
+		{ id: 1, text: 'Вариант 1' },
+		{ id: 2, text: 'Вариант 2' },
+		{ id: 3, text: 'Вариант 3' },
+	],
+	matchingPairs: null,
+	promptText: 'Выберите правильные варианты',
+	explanationText: null,
+	correct: [1, 3],
+}
+
+const customQuestionType = {
+	type: 'custom_multi',
+	order: 0,
+	points: 3,
+	options: [
+		{ id: 1, text: 'A' },
+		{ id: 2, text: 'B' },
+		{ id: 3, text: 'C' },
+	],
+	matchingPairs: null,
+	promptText: 'Кастомный вопрос',
+	explanationText: null,
+	correct: [1, 2],
 }
 
 const draftWithoutQuestions = SaveTestSchema.safeParse({
@@ -57,3 +111,47 @@ const publishedWithQuestion = SaveTestSchema.safeParse({
 })
 
 assert.equal(publishedWithQuestion.success, true)
+
+const publishedWithShortAnswer = SaveTestSchema.safeParse({
+	...basePayload,
+	isPublished: true,
+	questions: [shortAnswerQuestion],
+})
+assert.equal(publishedWithShortAnswer.success, true)
+
+const publishedWithSequence = SaveTestSchema.safeParse({
+	...basePayload,
+	isPublished: true,
+	questions: [sequenceQuestion],
+})
+assert.equal(publishedWithSequence.success, true)
+
+const publishedCheckboxWithNumericIds = SaveTestSchema.safeParse({
+	...basePayload,
+	isPublished: true,
+	questions: [checkboxWithNumericIdsQuestion],
+})
+assert.equal(publishedCheckboxWithNumericIds.success, true)
+
+const publishedCustomType = SaveTestSchema.safeParse({
+	...basePayload,
+	isPublished: true,
+	questions: [customQuestionType],
+})
+assert.equal(publishedCustomType.success, true)
+
+const invalidSequence = SaveTestSchema.safeParse({
+	...basePayload,
+	isPublished: true,
+	questions: [{ ...sequenceQuestion, correct: '23a4' }],
+})
+assert.equal(invalidSequence.success, false)
+
+const scoringRulesByDefault = SaveTestSchema.safeParse({
+	...basePayload,
+	scoringRules: undefined,
+	questions: [radioQuestion],
+})
+assert.equal(scoringRulesByDefault.success, true)
+if (!scoringRulesByDefault.success) throw new Error('Payload without scoringRules should be accepted')
+assert.equal(scoringRulesByDefault.data.scoringRules, undefined)

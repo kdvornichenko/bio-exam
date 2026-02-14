@@ -3,7 +3,7 @@
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
-import { CheckSquare, Edit, Eye, GripVertical, List, Radio, Trash2 } from 'lucide-react'
+import { CheckSquare, Edit, Eye, GripVertical, List, ListOrdered, Radio, Trash2, Type } from 'lucide-react'
 import Link from 'next/link'
 
 import { Badge } from '@/components/ui/badge'
@@ -22,8 +22,29 @@ interface Props {
 
 const typeLabels: Record<string, { label: string; icon: typeof Radio }> = {
 	radio: { label: 'Один ответ', icon: Radio },
-	checkbox: { label: 'Несколько', icon: CheckSquare },
+	checkbox: { label: 'Множественный', icon: CheckSquare },
 	matching: { label: 'Сопоставление', icon: List },
+	short_answer: { label: 'Краткий ответ', icon: Type },
+	sequence: { label: 'Последовательность', icon: ListOrdered },
+}
+
+function resolveTemplate(
+	question: Question
+): 'single_choice' | 'multi_choice' | 'matching' | 'short_text' | 'sequence_digits' {
+	if (question.questionUiTemplate) return question.questionUiTemplate
+	if (question.type === 'radio') return 'single_choice'
+	if (question.type === 'checkbox') return 'multi_choice'
+	if (question.type === 'matching') return 'matching'
+	if (question.type === 'sequence') return 'sequence_digits'
+	return 'short_text'
+}
+
+function getIconByTemplate(template: string): typeof Radio {
+	if (template === 'multi_choice') return CheckSquare
+	if (template === 'matching') return List
+	if (template === 'sequence_digits') return ListOrdered
+	if (template === 'short_text') return Type
+	return Radio
 }
 
 export default function QuestionCard({ question, index, editHref, viewHref, onEdit, onDelete }: Props) {
@@ -37,8 +58,12 @@ export default function QuestionCard({ question, index, editHref, viewHref, onEd
 		opacity: isDragging ? 0.5 : 1,
 	}
 
-	const typeConfig = typeLabels[question.type] || typeLabels.radio
-	const TypeIcon = typeConfig.icon
+	const template = resolveTemplate(question)
+	const typeConfig = typeLabels[question.type] || {
+		label: question.questionTypeTitle || question.type,
+		icon: getIconByTemplate(template),
+	}
+	const TypeIcon = getIconByTemplate(template)
 
 	// Get preview text (first 100 chars of prompt)
 	const previewText = question.promptText
@@ -48,7 +73,11 @@ export default function QuestionCard({ question, index, editHref, viewHref, onEd
 
 	// Count options/pairs
 	const optionsCount =
-		question.type === 'matching' ? (question.matchingPairs?.left.length ?? 0) : (question.options?.length ?? 0)
+		template === 'matching'
+			? `${question.matchingPairs?.left.length ?? 0} пар`
+			: template === 'short_text' || template === 'sequence_digits'
+				? 'без вариантов'
+				: `${question.options?.length ?? 0} вариантов`
 
 	return (
 		<div
@@ -68,10 +97,10 @@ export default function QuestionCard({ question, index, editHref, viewHref, onEd
 				<div className="flex items-center gap-2">
 					<Badge variant="outline" className="flex items-center gap-1">
 						<TypeIcon className="h-3 w-3" />
-						{typeConfig.label}
+						{question.questionTypeTitle || typeConfig.label}
 					</Badge>
 					<span className="text-muted-foreground text-xs">
-						{optionsCount} {question.type === 'matching' ? 'пар' : 'вариантов'} • {question.points} б.
+						{optionsCount} • {question.points} б.
 					</span>
 				</div>
 				<p className="text-muted-foreground mt-1 truncate text-sm">

@@ -14,6 +14,8 @@ export const breadcrumbConfig = {
 		dashboard: 'Дашборд',
 		users: 'Пользователи',
 		tests: 'Тесты',
+		scoring: 'Настройка баллов',
+		'question-types': 'Типы вопросов',
 	} as Record<string, string>,
 }
 

@@ -5,13 +5,36 @@ import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 
-import { and, asc, count, eq, gt, inArray, sql } from 'drizzle-orm'
+import { and, asc, count, eq, gt, inArray, isNull, sql } from 'drizzle-orm'
 import { Router } from 'express'
 import multer from 'multer'
+import { z } from 'zod'
 
 import { db } from '../../db/index.js'
-import { answerKeys, questions, tests, topics } from '../../db/schema.js'
+import {
+	answerKeys,
+	questionTypes,
+	questions,
+	testQuestionTypeOverrides,
+	testScoringSettings,
+	tests,
+	topics,
+} from '../../db/schema.js'
 import { ERROR_MESSAGES } from '../../lib/constants.js'
+import { TestScoringRulesSchema, createDefaultTestScoringRules, resolveEffectiveScoringRules } from '../../lib/tests/scoring.js'
+import {
+	getEffectiveQuestionTypesForTest,
+	getGlobalQuestionTypes,
+	getQuestionTypeMapForTest,
+	questionTypeToDefinition,
+	validateQuestionWithType,
+} from '../../lib/tests/question-type-resolver.js'
+import {
+	QuestionTypeDefinitionSchema,
+	QuestionTypeScoringRuleSchema,
+	QuestionTypeValidationSchema,
+	isMistakeMetricAllowedForTemplate,
+} from '../../lib/tests/question-types.js'
 import { requirePerm } from '../../middleware/auth/requirePerm.js'
 import { sessionRequired } from '../../middleware/auth/session.js'
 import { validateUUID } from '../../middleware/validateParams.js'
@@ -19,6 +42,145 @@ import { MoveQuestionSchema, SaveTestSchema, TopicSchema } from '../../schemas/t
 import { storageService } from '../../services/storage/storage.js'
 
 const router = Router()
+
+const GlobalScoringRulesPayloadSchema = z.object({
+	rules: TestScoringRulesSchema,
+})
+
+const TestScoringRulesPayloadSchema = z
+	.object({
+		rules: TestScoringRulesSchema.optional(),
+		useGlobal: z.boolean().optional(),
+	})
+	.superRefine((value, ctx) => {
+		if (value.useGlobal === true) return
+		if (!value.rules) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ['rules'],
+				message: 'rules обязательны, если useGlobal не установлен',
+			})
+		}
+	})
+
+const QuestionTypeKeySchema = z
+	.string()
+	.min(1)
+	.max(100)
+	.regex(/^[a-z0-9_]+$/)
+
+const CreateQuestionTypePayloadSchema = z.object({
+	key: QuestionTypeKeySchema,
+	title: z.string().min(1).max(120),
+	description: z.string().max(500).optional().nullable(),
+	uiTemplate: z.enum(['single_choice', 'multi_choice', 'matching', 'short_text', 'sequence_digits']),
+	validationSchema: QuestionTypeValidationSchema,
+	scoringRule: QuestionTypeScoringRuleSchema,
+	isActive: z.boolean().optional(),
+})
+
+const UpdateQuestionTypePayloadSchema = z.object({
+	title: z.string().min(1).max(120).optional(),
+	description: z.string().max(500).optional().nullable(),
+	uiTemplate: z.enum(['single_choice', 'multi_choice', 'matching', 'short_text', 'sequence_digits']).optional(),
+	validationSchema: QuestionTypeValidationSchema.optional(),
+	scoringRule: QuestionTypeScoringRuleSchema.optional(),
+	isActive: z.boolean().optional(),
+})
+
+const PutTestQuestionTypeOverrideSchema = z.object({
+	titleOverride: z.string().max(120).optional().nullable(),
+	scoringRuleOverride: QuestionTypeScoringRuleSchema.optional().nullable(),
+	isDisabled: z.boolean().optional(),
+})
+
+function validateScoringRuleTemplateCompatibility(params: {
+	uiTemplate: 'single_choice' | 'multi_choice' | 'matching' | 'short_text' | 'sequence_digits'
+	scoringRule: z.infer<typeof QuestionTypeScoringRuleSchema>
+}): string | null {
+	if (!isMistakeMetricAllowedForTemplate(params.uiTemplate, params.scoringRule.mistakeMetric)) {
+		return `Метрика ${params.scoringRule.mistakeMetric} несовместима с шаблоном ${params.uiTemplate}`
+	}
+	return null
+}
+
+async function ensureGlobalScoringRules(updatedBy?: string | null) {
+	const existing = await db.query.testScoringSettings.findFirst({
+		where: eq(testScoringSettings.id, 'global'),
+	})
+	if (existing) {
+		return TestScoringRulesSchema.parse(existing.rules)
+	}
+
+	const defaults = createDefaultTestScoringRules()
+	await db
+		.insert(testScoringSettings)
+		.values({
+			id: 'global',
+			rules: defaults,
+			updatedBy: updatedBy ?? null,
+			updatedAt: new Date(),
+		})
+		.onConflictDoNothing()
+
+	return defaults
+}
+
+async function syncQuestionPointsForTest(testId: string, rules: z.infer<typeof TestScoringRulesSchema>) {
+	await db.execute(sql`
+		UPDATE ${questions}
+		SET
+			${questions.points} = CASE ${questions.type}
+				WHEN 'radio' THEN ${rules.radio.correctPoints}
+				WHEN 'checkbox' THEN ${rules.checkbox.correctPoints}
+				WHEN 'matching' THEN ${rules.matching.correctPoints}
+				WHEN 'short_answer' THEN ${rules.short_answer.correctPoints}
+				WHEN 'sequence' THEN ${rules.sequence.correctPoints}
+				ELSE ${questions.points}
+			END,
+			${questions.updatedAt} = now()
+		WHERE ${questions.testId} = ${testId}
+	`)
+}
+
+function resolveQuestionPoints(params: {
+	type: string
+	fallbackPoints: number
+	typeMap: Awaited<ReturnType<typeof getQuestionTypeMapForTest>>
+}): number {
+	const rulePoints = params.typeMap[params.type]?.scoringRule?.correctPoints
+	if (typeof rulePoints === 'number' && Number.isFinite(rulePoints) && rulePoints >= 0) {
+		return rulePoints
+	}
+	return params.fallbackPoints
+}
+
+async function syncQuestionPointsForTestByTypeConfig(testId: string) {
+	const typeMap = await getQuestionTypeMapForTest({ testId, includeInactive: true })
+	const existingQuestions = await db
+		.select({
+			id: questions.id,
+			type: questions.type,
+			points: questions.points,
+		})
+		.from(questions)
+		.where(eq(questions.testId, testId))
+
+	for (const question of existingQuestions) {
+		const points = resolveQuestionPoints({
+			type: question.type,
+			fallbackPoints: Number(question.points ?? 0),
+			typeMap,
+		})
+		await db
+			.update(questions)
+			.set({
+				points,
+				updatedAt: new Date(),
+			})
+			.where(eq(questions.id, question.id))
+	}
+}
 
 // =============================================================================
 // Topics
@@ -203,6 +365,514 @@ router.get('/', sessionRequired(), requirePerm('tests', 'read'), async (req, res
 	}
 })
 
+// =============================================================================
+// Question Types
+// =============================================================================
+
+// GET /api/tests/question-types - список типов вопросов (глобально или эффективно для теста)
+router.get('/question-types', sessionRequired(), requirePerm('tests', 'read'), async (req, res, next) => {
+	try {
+		const testId = typeof req.query.testId === 'string' ? req.query.testId : undefined
+		const includeInactive = req.query.includeInactive === 'true'
+
+		if (testId) {
+			const test = await db.query.tests.findFirst({ where: eq(tests.id, testId) })
+			if (!test) return res.status(404).json({ error: ERROR_MESSAGES.TEST_NOT_FOUND })
+
+			const resolved = await getEffectiveQuestionTypesForTest({ testId, includeInactive })
+			const overrides = await db.query.testQuestionTypeOverrides.findMany({
+				where: eq(testQuestionTypeOverrides.testId, testId),
+			})
+			const overridesMap = new Map(overrides.map((item) => [item.questionTypeKey, item]))
+
+			return res.json({
+				scope: 'test',
+				testId,
+				questionTypes: resolved.map((item) => {
+					const override = overridesMap.get(item.key)
+					return {
+						...questionTypeToDefinition(item),
+						hasOverride: Boolean(override),
+						override: override
+							? {
+									titleOverride: override.titleOverride,
+									scoringRuleOverride: override.scoringRuleOverride,
+									isDisabled: override.isDisabled,
+							  }
+							: null,
+					}
+				}),
+			})
+		}
+
+		const globalTypes = await getGlobalQuestionTypes({ includeInactive })
+		res.json({
+			scope: 'global',
+			questionTypes: globalTypes.map((item) => ({
+				...questionTypeToDefinition(item),
+				hasOverride: false,
+				override: null,
+			})),
+		})
+	} catch (e) {
+		next(e)
+	}
+})
+
+// GET /api/tests/question-types/:key - получить тип вопроса по ключу
+router.get('/question-types/:key', sessionRequired(), requirePerm('tests', 'read'), async (req, res, next) => {
+	try {
+		const key = req.params.key as string
+		const parsedKey = QuestionTypeKeySchema.safeParse(key)
+		if (!parsedKey.success) {
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsedKey.error.flatten() })
+		}
+
+		const globalTypes = await getGlobalQuestionTypes({ includeInactive: true })
+		const found = globalTypes.find((item) => item.key === parsedKey.data)
+		if (!found) return res.status(404).json({ error: 'Question type not found' })
+
+		res.json({ questionType: questionTypeToDefinition(found) })
+	} catch (e) {
+		next(e)
+	}
+})
+
+// POST /api/tests/question-types - создать новый тип вопроса
+router.post('/question-types', sessionRequired(), requirePerm('tests', 'write'), async (req, res, next) => {
+	try {
+		const parsed = CreateQuestionTypePayloadSchema.safeParse(req.body)
+		if (!parsed.success) {
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
+		}
+		const normalizedCreate = QuestionTypeDefinitionSchema.safeParse({
+			...parsed.data,
+			isSystem: false,
+			isActive: parsed.data.isActive ?? true,
+		})
+		if (!normalizedCreate.success) {
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: normalizedCreate.error.flatten() })
+		}
+
+		const existing = await db.query.questionTypes.findFirst({ where: eq(questionTypes.key, parsed.data.key) })
+		if (existing) {
+			return res.status(409).json({ error: 'Question type with this key already exists' })
+		}
+
+		const userId = req.authUser?.id ?? null
+		const [created] = await db
+			.insert(questionTypes)
+			.values({
+				key: normalizedCreate.data.key,
+				title: normalizedCreate.data.title,
+				description: normalizedCreate.data.description ?? null,
+				uiTemplate: normalizedCreate.data.uiTemplate,
+				validationSchema: normalizedCreate.data.validationSchema ?? null,
+				scoringRule: normalizedCreate.data.scoringRule,
+				isSystem: false,
+				isActive: normalizedCreate.data.isActive ?? true,
+				createdBy: userId,
+				updatedBy: userId,
+			})
+			.returning()
+
+		res.status(201).json({
+			questionType: {
+				key: created.key,
+				title: created.title,
+				description: created.description,
+				uiTemplate: created.uiTemplate,
+				validationSchema: created.validationSchema,
+				scoringRule: created.scoringRule,
+				isSystem: created.isSystem,
+				isActive: created.isActive,
+			},
+		})
+	} catch (e) {
+		next(e)
+	}
+})
+
+// PATCH /api/tests/question-types/:key - обновить тип вопроса
+router.patch('/question-types/:key', sessionRequired(), requirePerm('tests', 'write'), async (req, res, next) => {
+	try {
+		const key = req.params.key as string
+		const parsedKey = QuestionTypeKeySchema.safeParse(key)
+		if (!parsedKey.success) {
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsedKey.error.flatten() })
+		}
+
+		const parsed = UpdateQuestionTypePayloadSchema.safeParse(req.body)
+		if (!parsed.success) {
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
+		}
+
+		const existing = await db.query.questionTypes.findFirst({ where: eq(questionTypes.key, parsedKey.data) })
+		if (!existing) return res.status(404).json({ error: 'Question type not found' })
+		if (existing.isSystem && parsed.data.uiTemplate && parsed.data.uiTemplate !== existing.uiTemplate) {
+			return res.status(400).json({ error: 'Cannot change uiTemplate for system question type' })
+		}
+		const nextUiTemplate = parsed.data.uiTemplate ?? existing.uiTemplate
+		const nextScoringRuleRaw = parsed.data.scoringRule ?? existing.scoringRule
+		const parsedNextRule = QuestionTypeScoringRuleSchema.safeParse(nextScoringRuleRaw)
+		if (!parsedNextRule.success) {
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsedNextRule.error.flatten() })
+		}
+		const normalizedDefinition = QuestionTypeDefinitionSchema.safeParse({
+			key: existing.key,
+			title: parsed.data.title ?? existing.title,
+			description: parsed.data.description === undefined ? existing.description : parsed.data.description,
+			uiTemplate: nextUiTemplate,
+			validationSchema: parsed.data.validationSchema === undefined ? existing.validationSchema : parsed.data.validationSchema,
+			scoringRule: parsedNextRule.data,
+			isSystem: existing.isSystem,
+			isActive: parsed.data.isActive ?? existing.isActive,
+		})
+		if (!normalizedDefinition.success) {
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: normalizedDefinition.error.flatten() })
+		}
+
+		const [updated] = await db
+			.update(questionTypes)
+			.set({
+				title: normalizedDefinition.data.title,
+				description: normalizedDefinition.data.description ?? null,
+				uiTemplate: normalizedDefinition.data.uiTemplate,
+				validationSchema: normalizedDefinition.data.validationSchema ?? null,
+				scoringRule: normalizedDefinition.data.scoringRule,
+				isActive: normalizedDefinition.data.isActive,
+				updatedAt: new Date(),
+				updatedBy: req.authUser?.id ?? null,
+			})
+			.where(eq(questionTypes.id, existing.id))
+			.returning()
+
+		const allTests = await db.select({ id: tests.id }).from(tests)
+		for (const test of allTests) {
+			await syncQuestionPointsForTestByTypeConfig(test.id)
+		}
+
+		res.json({
+			questionType: {
+				key: updated.key,
+				title: updated.title,
+				description: updated.description,
+				uiTemplate: updated.uiTemplate,
+				validationSchema: updated.validationSchema,
+				scoringRule: updated.scoringRule,
+				isSystem: updated.isSystem,
+				isActive: updated.isActive,
+			},
+		})
+	} catch (e) {
+		next(e)
+	}
+})
+
+// DELETE /api/tests/question-types/:key - мягко отключить тип вопроса
+router.delete('/question-types/:key', sessionRequired(), requirePerm('tests', 'write'), async (req, res, next) => {
+	try {
+		const key = req.params.key as string
+		const parsedKey = QuestionTypeKeySchema.safeParse(key)
+		if (!parsedKey.success) {
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsedKey.error.flatten() })
+		}
+
+		const existing = await db.query.questionTypes.findFirst({ where: eq(questionTypes.key, parsedKey.data) })
+		if (!existing) return res.status(404).json({ error: 'Question type not found' })
+		if (existing.isSystem) {
+			return res.status(400).json({ error: 'System question types cannot be removed' })
+		}
+
+		await db
+			.update(questionTypes)
+			.set({
+				isActive: false,
+				updatedAt: new Date(),
+				updatedBy: req.authUser?.id ?? null,
+			})
+			.where(eq(questionTypes.id, existing.id))
+
+		const allTests = await db.select({ id: tests.id }).from(tests)
+		for (const test of allTests) {
+			await syncQuestionPointsForTestByTypeConfig(test.id)
+		}
+
+		res.json({ ok: true })
+	} catch (e) {
+		next(e)
+	}
+})
+
+// GET /api/tests/question-types/tests/:id/overrides - override баллов по типам для теста
+router.get(
+	'/question-types/tests/:id/overrides',
+	validateUUID('id'),
+	sessionRequired(),
+	requirePerm('tests', 'read'),
+	async (req, res, next) => {
+		try {
+			const testId = req.params.id as string
+			const test = await db.query.tests.findFirst({ where: eq(tests.id, testId) })
+			if (!test) return res.status(404).json({ error: ERROR_MESSAGES.TEST_NOT_FOUND })
+
+			const overrides = await db.query.testQuestionTypeOverrides.findMany({
+				where: eq(testQuestionTypeOverrides.testId, testId),
+			})
+			res.json({ overrides })
+		} catch (e) {
+			next(e)
+		}
+	}
+)
+
+// PUT /api/tests/question-types/tests/:id/overrides/:key - upsert override типа для теста
+router.put(
+	'/question-types/tests/:id/overrides/:key',
+	validateUUID('id'),
+	sessionRequired(),
+	requirePerm('tests', 'write'),
+	async (req, res, next) => {
+		try {
+			const testId = req.params.id as string
+			const key = req.params.key as string
+			const parsedKey = QuestionTypeKeySchema.safeParse(key)
+			if (!parsedKey.success) {
+				return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsedKey.error.flatten() })
+			}
+			const parsed = PutTestQuestionTypeOverrideSchema.safeParse(req.body)
+			if (!parsed.success) {
+				return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
+			}
+
+			const test = await db.query.tests.findFirst({ where: eq(tests.id, testId) })
+			if (!test) return res.status(404).json({ error: ERROR_MESSAGES.TEST_NOT_FOUND })
+
+			const availableTypes = await getGlobalQuestionTypes({ includeInactive: true })
+			const targetType = availableTypes.find((item) => item.key === parsedKey.data)
+			if (!targetType) return res.status(404).json({ error: 'Question type not found' })
+			if (parsed.data.scoringRuleOverride) {
+				const compatibilityError = validateScoringRuleTemplateCompatibility({
+					uiTemplate: targetType.uiTemplate,
+					scoringRule: parsed.data.scoringRuleOverride,
+				})
+				if (compatibilityError) {
+					return res.status(400).json({
+						error: ERROR_MESSAGES.BAD_REQUEST,
+						details: {
+							formErrors: [compatibilityError],
+							fieldErrors: { scoringRuleOverride: [compatibilityError] },
+						},
+					})
+				}
+			}
+
+			const existing = await db.query.testQuestionTypeOverrides.findFirst({
+				where: and(
+					eq(testQuestionTypeOverrides.testId, testId),
+					eq(testQuestionTypeOverrides.questionTypeKey, parsedKey.data)
+				),
+			})
+
+			if (!existing) {
+				await db.insert(testQuestionTypeOverrides).values({
+					testId,
+					questionTypeKey: parsedKey.data,
+					titleOverride: parsed.data.titleOverride ?? null,
+					scoringRuleOverride: parsed.data.scoringRuleOverride ?? null,
+					isDisabled: parsed.data.isDisabled ?? false,
+					createdBy: req.authUser?.id ?? null,
+					updatedBy: req.authUser?.id ?? null,
+				})
+			} else {
+				await db
+					.update(testQuestionTypeOverrides)
+					.set({
+						titleOverride: parsed.data.titleOverride ?? null,
+						scoringRuleOverride: parsed.data.scoringRuleOverride ?? null,
+						isDisabled: parsed.data.isDisabled ?? false,
+						updatedAt: new Date(),
+						updatedBy: req.authUser?.id ?? null,
+					})
+					.where(eq(testQuestionTypeOverrides.id, existing.id))
+			}
+
+			await syncQuestionPointsForTestByTypeConfig(testId)
+
+			const effectiveTypes = await getEffectiveQuestionTypesForTest({ testId, includeInactive: true })
+			res.json({
+				ok: true,
+				effectiveType: effectiveTypes.find((item) => item.key === parsedKey.data) ?? null,
+			})
+		} catch (e) {
+			next(e)
+		}
+	}
+)
+
+// DELETE /api/tests/question-types/tests/:id/overrides/:key - удалить override типа для теста
+router.delete(
+	'/question-types/tests/:id/overrides/:key',
+	validateUUID('id'),
+	sessionRequired(),
+	requirePerm('tests', 'write'),
+	async (req, res, next) => {
+		try {
+			const testId = req.params.id as string
+			const key = req.params.key as string
+			const parsedKey = QuestionTypeKeySchema.safeParse(key)
+			if (!parsedKey.success) {
+				return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsedKey.error.flatten() })
+			}
+			const test = await db.query.tests.findFirst({ where: eq(tests.id, testId) })
+			if (!test) return res.status(404).json({ error: ERROR_MESSAGES.TEST_NOT_FOUND })
+
+			await db
+				.delete(testQuestionTypeOverrides)
+				.where(
+					and(
+						eq(testQuestionTypeOverrides.testId, testId),
+						eq(testQuestionTypeOverrides.questionTypeKey, parsedKey.data)
+					)
+				)
+			await syncQuestionPointsForTestByTypeConfig(testId)
+
+			res.json({ ok: true })
+		} catch (e) {
+			next(e)
+		}
+	}
+)
+
+// GET /api/tests/scoring-rules/global - получить глобальные правила начисления баллов
+router.get('/scoring-rules/global', sessionRequired(), requirePerm('tests', 'read'), async (req, res, next) => {
+	try {
+		const rules = await ensureGlobalScoringRules(req.authUser?.id)
+		res.json({ rules })
+	} catch (e) {
+		next(e)
+	}
+})
+
+// PUT /api/tests/scoring-rules/global - обновить глобальные правила начисления баллов
+router.put('/scoring-rules/global', sessionRequired(), requirePerm('tests', 'write'), async (req, res, next) => {
+	try {
+		const parsed = GlobalScoringRulesPayloadSchema.safeParse(req.body)
+		if (!parsed.success) {
+			return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
+		}
+
+		const userId = req.authUser?.id ?? null
+		const now = new Date()
+
+		await db
+			.insert(testScoringSettings)
+			.values({
+				id: 'global',
+				rules: parsed.data.rules,
+				updatedBy: userId,
+				updatedAt: now,
+			})
+			.onConflictDoUpdate({
+				target: testScoringSettings.id,
+				set: {
+					rules: parsed.data.rules,
+					updatedAt: now,
+					updatedBy: userId,
+				},
+			})
+
+		const testsUsingGlobal = await db.select({ id: tests.id }).from(tests).where(isNull(tests.scoringRules))
+		for (const testRow of testsUsingGlobal) {
+			await syncQuestionPointsForTest(testRow.id, parsed.data.rules)
+		}
+
+		res.json({ ok: true })
+	} catch (e) {
+		next(e)
+	}
+})
+
+// GET /api/tests/scoring-rules/tests/:id - правила начисления баллов конкретного теста
+router.get(
+	'/scoring-rules/tests/:id',
+	validateUUID('id'),
+	sessionRequired(),
+	requirePerm('tests', 'read'),
+	async (req, res, next) => {
+		try {
+			const testId = req.params.id as string
+			const test = await db.query.tests.findFirst({ where: eq(tests.id, testId) })
+			if (!test) return res.status(404).json({ error: ERROR_MESSAGES.TEST_NOT_FOUND })
+
+			const globalRules = await ensureGlobalScoringRules(req.authUser?.id)
+			const effectiveRules = resolveEffectiveScoringRules({
+				globalRules,
+				testOverrideRules: test.scoringRules,
+			})
+
+			res.json({
+				testId,
+				hasOverride: test.scoringRules != null,
+				overrideRules: test.scoringRules,
+				globalRules,
+				effectiveRules,
+			})
+		} catch (e) {
+			next(e)
+		}
+	}
+)
+
+// PUT /api/tests/scoring-rules/tests/:id - обновить/сбросить override правил для теста
+router.put(
+	'/scoring-rules/tests/:id',
+	validateUUID('id'),
+	sessionRequired(),
+	requirePerm('tests', 'write'),
+	async (req, res, next) => {
+		try {
+			const testId = req.params.id as string
+			const parsed = TestScoringRulesPayloadSchema.safeParse(req.body)
+			if (!parsed.success) {
+				return res.status(400).json({ error: ERROR_MESSAGES.BAD_REQUEST, details: parsed.error.flatten() })
+			}
+
+			const test = await db.query.tests.findFirst({ where: eq(tests.id, testId) })
+			if (!test) return res.status(404).json({ error: ERROR_MESSAGES.TEST_NOT_FOUND })
+
+			const globalRules = await ensureGlobalScoringRules(req.authUser?.id)
+			const useGlobal = parsed.data.useGlobal === true
+			let overrideRules: z.infer<typeof TestScoringRulesSchema> | null = null
+			let effectiveRules = globalRules
+			if (!useGlobal) {
+				overrideRules = TestScoringRulesSchema.parse(parsed.data.rules)
+				effectiveRules = overrideRules
+			}
+
+			await db
+				.update(tests)
+				.set({
+					scoringRules: overrideRules,
+					updatedAt: new Date(),
+					updatedBy: req.authUser?.id ?? null,
+				})
+				.where(eq(tests.id, testId))
+
+			await syncQuestionPointsForTest(testId, effectiveRules)
+
+			res.json({
+				ok: true,
+				hasOverride: !useGlobal,
+				overrideRules,
+				effectiveRules,
+			})
+		} catch (e) {
+			next(e)
+		}
+	}
+)
+
 // GET /api/tests/by-slug/:topicSlug/:testSlug - загрузить тест по slug
 router.get('/by-slug/:topicSlug/:testSlug', sessionRequired(), requirePerm('tests', 'read'), async (req, res, next) => {
 	try {
@@ -230,6 +900,7 @@ router.get('/by-slug/:topicSlug/:testSlug', sessionRequired(), requirePerm('test
 			.from(questions)
 			.where(eq(questions.testId, test.id))
 			.orderBy(asc(questions.order))
+		const questionTypesMap = await getQuestionTypeMapForTest({ testId: test.id, includeInactive: true })
 
 		// Загружаем активные ключи ответов
 		const questionIds = questionRows.map((q) => q.id)
@@ -270,6 +941,8 @@ router.get('/by-slug/:topicSlug/:testSlug', sessionRequired(), requirePerm('test
 			return {
 				id: q.id,
 				type: q.type,
+				questionUiTemplate: questionTypesMap[q.type]?.uiTemplate ?? null,
+				questionTypeTitle: questionTypesMap[q.type]?.title ?? q.type,
 				order: q.order,
 				points: q.points,
 				options: q.options,
@@ -313,6 +986,7 @@ router.get('/:id', validateUUID('id'), sessionRequired(), requirePerm('tests', '
 
 		// Загружаем вопросы
 		const questionRows = await db.select().from(questions).where(eq(questions.testId, id)).orderBy(asc(questions.order))
+		const questionTypesMap = await getQuestionTypeMapForTest({ testId: id, includeInactive: true })
 
 		// Загружаем активные ключи ответов
 		const questionIds = questionRows.map((q) => q.id)
@@ -353,6 +1027,8 @@ router.get('/:id', validateUUID('id'), sessionRequired(), requirePerm('tests', '
 			return {
 				id: q.id,
 				type: q.type,
+				questionUiTemplate: questionTypesMap[q.type]?.uiTemplate ?? null,
+				questionTypeTitle: questionTypesMap[q.type]?.title ?? q.type,
 				order: q.order,
 				points: q.points,
 				options: q.options,
@@ -386,6 +1062,28 @@ router.post('/save', sessionRequired(), requirePerm('tests', 'write'), async (re
 
 		const userId = req.authUser?.id
 		const data = parsed.data
+		const globalScoringRules = await ensureGlobalScoringRules(userId)
+		const effectiveScoringRules = resolveEffectiveScoringRules({
+			globalRules: globalScoringRules,
+			testOverrideRules: data.scoringRules,
+		})
+		const globalQuestionTypesMap = await getQuestionTypeMapForTest({ includeInactive: true })
+
+		for (let index = 0; index < data.questions.length; index++) {
+			const question = data.questions[index]
+			const questionValidationError = validateQuestionWithType(question, globalQuestionTypesMap)
+			if (questionValidationError) {
+				return res.status(400).json({
+					error: ERROR_MESSAGES.BAD_REQUEST,
+					details: {
+						formErrors: [],
+						fieldErrors: {
+							questions: [`Вопрос ${index + 1}: ${questionValidationError}`],
+						},
+					},
+				})
+			}
+		}
 
 		// Получаем тему для slug
 		const topic = await db.query.topics.findFirst({ where: eq(topics.id, data.topicId) })
@@ -413,6 +1111,7 @@ router.post('/save', sessionRequired(), requirePerm('tests', 'write'), async (re
 					description: data.description,
 					isPublished: data.isPublished,
 					showCorrectAnswer: data.showCorrectAnswer,
+					scoringRules: data.scoringRules ?? null,
 					timeLimitMinutes: data.timeLimitMinutes,
 					passingScore: data.passingScore,
 					order: data.order,
@@ -431,7 +1130,11 @@ router.post('/save', sessionRequired(), requirePerm('tests', 'write'), async (re
 						testId: newTest.id,
 						type: q.type,
 						order: q.order,
-						points: q.points,
+						points: resolveQuestionPoints({
+							type: q.type,
+							fallbackPoints: Number(q.points ?? 0),
+							typeMap: globalQuestionTypesMap,
+						}),
 						options: q.options ?? null,
 						matchingPairs: q.matchingPairs ?? null,
 						promptPath: `topics/${topic.slug}/${data.slug}/questions/${crypto.randomUUID()}/prompt.md`,
@@ -488,6 +1191,8 @@ router.post('/save', sessionRequired(), requirePerm('tests', 'write'), async (re
 			description: data.description,
 			isPublished: data.isPublished,
 			showCorrectAnswer: data.showCorrectAnswer,
+			scoringRules: effectiveScoringRules,
+			useGlobalScoringRules: data.scoringRules == null,
 			timeLimitMinutes: data.timeLimitMinutes,
 			passingScore: data.passingScore,
 			version: result.test.version,
@@ -521,6 +1226,29 @@ router.post(
 			const existingTest = await db.query.tests.findFirst({ where: eq(tests.id, testId) })
 			if (!existingTest) {
 				return res.status(404).json({ error: ERROR_MESSAGES.TEST_NOT_FOUND })
+			}
+			const globalScoringRules = await ensureGlobalScoringRules(userId)
+			const nextScoringOverride = data.scoringRules === undefined ? existingTest.scoringRules : data.scoringRules
+			const effectiveScoringRules = resolveEffectiveScoringRules({
+				globalRules: globalScoringRules,
+				testOverrideRules: nextScoringOverride,
+			})
+			const effectiveQuestionTypesMap = await getQuestionTypeMapForTest({ testId, includeInactive: true })
+
+			for (let index = 0; index < data.questions.length; index++) {
+				const question = data.questions[index]
+				const questionValidationError = validateQuestionWithType(question, effectiveQuestionTypesMap)
+				if (questionValidationError) {
+					return res.status(400).json({
+						error: ERROR_MESSAGES.BAD_REQUEST,
+						details: {
+							formErrors: [],
+							fieldErrors: {
+								questions: [`Вопрос ${index + 1}: ${questionValidationError}`],
+							},
+						},
+					})
+				}
 			}
 
 			// Получаем тему
@@ -558,6 +1286,7 @@ router.post(
 						description: data.description,
 						isPublished: data.isPublished,
 						showCorrectAnswer: data.showCorrectAnswer,
+						scoringRules: nextScoringOverride ?? null,
 						timeLimitMinutes: data.timeLimitMinutes,
 						passingScore: data.passingScore,
 						order: data.order,
@@ -599,7 +1328,11 @@ router.post(
 							.set({
 								type: q.type,
 								order: q.order,
-								points: q.points,
+								points: resolveQuestionPoints({
+									type: q.type,
+									fallbackPoints: Number(q.points ?? 0),
+									typeMap: effectiveQuestionTypesMap,
+								}),
 								options: q.options ?? null,
 								matchingPairs: q.matchingPairs ?? null,
 								promptPath,
@@ -641,7 +1374,11 @@ router.post(
 								testId,
 								type: q.type,
 								order: q.order,
-								points: q.points,
+								points: resolveQuestionPoints({
+									type: q.type,
+									fallbackPoints: Number(q.points ?? 0),
+									typeMap: effectiveQuestionTypesMap,
+								}),
 								options: q.options ?? null,
 								matchingPairs: q.matchingPairs ?? null,
 							})
@@ -729,6 +1466,8 @@ router.post(
 				description: data.description,
 				isPublished: data.isPublished,
 				showCorrectAnswer: data.showCorrectAnswer,
+				scoringRules: effectiveScoringRules,
+				useGlobalScoringRules: nextScoringOverride == null,
 				timeLimitMinutes: data.timeLimitMinutes,
 				passingScore: data.passingScore,
 				version: result.test.version,
@@ -911,6 +1650,8 @@ router.post(
 							description: sourceTest.description,
 							version: 1,
 							isPublished: false,
+							showCorrectAnswer: sourceTest.showCorrectAnswer,
+							scoringRules: sourceTest.scoringRules,
 							timeLimitMinutes: sourceTest.timeLimitMinutes,
 							passingScore: sourceTest.passingScore,
 							order: (orderRow?.maxOrder ?? -1) + 1,

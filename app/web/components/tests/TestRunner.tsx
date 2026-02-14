@@ -14,6 +14,7 @@ import type {
 
 import { Button } from '../ui/button'
 import { Checkbox } from '../ui/checkbox'
+import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { RadioGroup, RadioGroupItem } from '../ui/radio-group'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
@@ -33,11 +34,28 @@ type Props = {
 	initialAttempts?: TestAttemptSummary[]
 }
 
+function legacyTypeToTemplate(type: string): PublicTestQuestion['questionUiTemplate'] {
+	if (type === 'radio') return 'single_choice'
+	if (type === 'checkbox') return 'multi_choice'
+	if (type === 'matching') return 'matching'
+	if (type === 'sequence') return 'sequence_digits'
+	if (type === 'short_answer') return 'short_text'
+	return null
+}
+
+function resolveTemplate(question: PublicTestQuestion): NonNullable<PublicTestQuestion['questionUiTemplate']> | null {
+	return question.questionUiTemplate ?? legacyTypeToTemplate(question.type)
+}
+
 function isAnswered(question: PublicTestQuestion, value: TestAnswerValue | undefined): boolean {
+	const template = resolveTemplate(question)
 	if (!value) return false
-	if (question.type === 'radio') return typeof value === 'string' && value.length > 0
-	if (question.type === 'checkbox') return Array.isArray(value) && value.length > 0
-	if (question.type === 'matching') {
+	if (template === 'single_choice') return typeof value === 'string' && value.length > 0
+	if (template === 'short_text' || template === 'sequence_digits') {
+		return typeof value === 'string' && value.trim().length > 0
+	}
+	if (template === 'multi_choice') return Array.isArray(value) && value.length > 0
+	if (template === 'matching') {
 		if (!value || typeof value !== 'object' || Array.isArray(value) || !question.matchingPairs) return false
 		const pairs = value as Record<string, string>
 		return question.matchingPairs.left.every((left) => typeof pairs[left.id] === 'string' && pairs[left.id].length > 0)
@@ -57,8 +75,9 @@ function formatDate(value: string): string {
 
 function formatCorrectAnswer(question: PublicTestQuestion, correctAnswer: unknown): string | null {
 	if (correctAnswer == null) return null
+	const template = resolveTemplate(question)
 
-	if ((question.type === 'radio' || question.type === 'checkbox') && Array.isArray(question.options)) {
+	if ((template === 'single_choice' || template === 'multi_choice') && Array.isArray(question.options)) {
 		const optionMap = new Map(question.options.map((option) => [option.id, option.text]))
 
 		if (typeof correctAnswer === 'string') {
@@ -72,8 +91,12 @@ function formatCorrectAnswer(question: PublicTestQuestion, correctAnswer: unknow
 		}
 	}
 
+	if (template === 'short_text' || template === 'sequence_digits') {
+		return typeof correctAnswer === 'string' ? correctAnswer : null
+	}
+
 	if (
-		question.type === 'matching' &&
+		template === 'matching' &&
 		question.matchingPairs &&
 		typeof correctAnswer === 'object' &&
 		!Array.isArray(correctAnswer)
@@ -141,6 +164,10 @@ export default function TestRunner({ test, questions, initialAttempts = [] }: Pr
 		})
 	}
 
+	const onInputTextAnswer = (questionId: string, value: string) => {
+		setAnswers((prev) => ({ ...prev, [questionId]: value }))
+	}
+
 	const handleSubmit = async () => {
 		setSubmitting(true)
 		setSubmitError(null)
@@ -167,7 +194,7 @@ export default function TestRunner({ test, questions, initialAttempts = [] }: Pr
 	}
 
 	return (
-		<div className="flex space-y-6 p-4">
+		<div className="flex gap-x-4 space-y-6">
 			<div className="flex-1">
 				<div className="space-y-2">
 					<h1 className="text-3xl font-semibold">{test.title}</h1>
@@ -196,6 +223,7 @@ export default function TestRunner({ test, questions, initialAttempts = [] }: Pr
 
 				{orderedQuestions.map((question, index) => {
 					const questionResult = resultByQuestion[question.id]
+					const template = resolveTemplate(question)
 
 					return (
 						<section
@@ -209,7 +237,7 @@ export default function TestRunner({ test, questions, initialAttempts = [] }: Pr
 									<MdxRenderer source={question.promptText} className="prose max-w-none text-sm" />
 								</div>
 
-								{question.type === 'radio' && Array.isArray(question.options) ? (
+								{template === 'single_choice' && Array.isArray(question.options) ? (
 									<RadioGroup
 										className="w-fit space-y-2"
 										value={typeof answers[question.id] === 'string' ? (answers[question.id] as string) : ''}
@@ -229,7 +257,7 @@ export default function TestRunner({ test, questions, initialAttempts = [] }: Pr
 									</RadioGroup>
 								) : null}
 
-								{question.type === 'checkbox' && Array.isArray(question.options) ? (
+								{template === 'multi_choice' && Array.isArray(question.options) ? (
 									<div className="space-y-2">
 										{question.options.map((option) => {
 											const inputId = `q-${question.id}-opt-${option.id}`
@@ -251,7 +279,22 @@ export default function TestRunner({ test, questions, initialAttempts = [] }: Pr
 									</div>
 								) : null}
 
-								{question.type === 'matching' && question.matchingPairs ? (
+								{template === 'short_text' || template === 'sequence_digits' ? (
+									<div className="max-w-xs space-y-1">
+										<Input
+											type="text"
+											inputMode={template === 'sequence_digits' ? 'numeric' : 'text'}
+											value={typeof answers[question.id] === 'string' ? (answers[question.id] as string) : ''}
+											onChange={(e) => onInputTextAnswer(question.id, e.target.value)}
+											placeholder={template === 'sequence_digits' ? 'Введите последовательность цифр' : 'Введите ответ'}
+										/>
+										{template === 'sequence_digits' ? (
+											<p className="text-muted-foreground text-xs">Последовательность вводится цифрами без пробелов.</p>
+										) : null}
+									</div>
+								) : null}
+
+								{template === 'matching' && question.matchingPairs ? (
 									<div className="space-y-3">
 										{question.matchingPairs.left.map((left) => {
 											const selectedRightId =
@@ -330,8 +373,8 @@ export default function TestRunner({ test, questions, initialAttempts = [] }: Pr
 				) : null}
 			</div>
 
-			<section className="bg-muted/30 rounded-lg border p-4">
-				<div className="flex flex-wrap items-center justify-between gap-3">
+			<section className="sticky top-4 h-fit rounded-lg border bg-white p-4">
+				<div className="flex flex-col flex-wrap items-center justify-between gap-3">
 					<p className="text-sm">
 						Отвечено: {answeredCount} из {orderedQuestions.length}
 					</p>

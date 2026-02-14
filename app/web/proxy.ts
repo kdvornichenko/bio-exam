@@ -18,7 +18,7 @@ function isPublicPath(pathname: string): boolean {
 	return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))
 }
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
 	const { pathname, search } = req.nextUrl
 	const hasSession = SESSION_COOKIE_CANDIDATES.some((cookieName) => Boolean(req.cookies.get(cookieName)?.value))
 

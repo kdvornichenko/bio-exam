@@ -7,6 +7,8 @@ import { z } from 'zod'
 
 import { db } from '../../db/index.js'
 import { answerKeys, questions, testAttempts, tests, topics } from '../../db/schema.js'
+import { getQuestionTypeMapForTest } from '../../lib/tests/question-type-resolver.js'
+import { scoreQuestionByType } from '../../lib/tests/scoring.js'
 import { sessionRequired } from '../../middleware/auth/session.js'
 import { validateUUID } from '../../middleware/validateParams.js'
 import { storageService } from '../../services/storage/storage.js'
@@ -28,27 +30,6 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 // =============================================================================
 // Helpers
 // =============================================================================
-
-function isStringRecord(value: unknown): value is Record<string, string> {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-	return Object.entries(value).every(([k, v]) => typeof k === 'string' && typeof v === 'string')
-}
-
-function normalizeStringArray(value: unknown): string[] | null {
-	if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) return null
-	return [...value].sort()
-}
-
-function isMatchingEqual(userAnswer: unknown, correctAnswer: unknown): boolean {
-	if (!isStringRecord(userAnswer) || !isStringRecord(correctAnswer)) return false
-
-	const userKeys = Object.keys(userAnswer).sort()
-	const correctKeys = Object.keys(correctAnswer).sort()
-	if (userKeys.length !== correctKeys.length) return false
-	if (userKeys.join('|') !== correctKeys.join('|')) return false
-
-	return userKeys.every((key) => userAnswer[key] === correctAnswer[key])
-}
 
 function buildQuestionMarkdownCandidates(params: {
 	storedPath: string | null
@@ -249,6 +230,7 @@ router.get('/topics/:topicSlug/tests/:testSlug', async (req, res, next) => {
 			.from(questions)
 			.where(eq(questions.testId, test.id))
 			.orderBy(asc(questions.order))
+		const questionTypesMap = await getQuestionTypeMapForTest({ testId: test.id, includeInactive: true })
 
 		const questionsWithTexts = await Promise.all(
 			questionRows.map(async (q) => {
@@ -265,6 +247,8 @@ router.get('/topics/:topicSlug/tests/:testSlug', async (req, res, next) => {
 				return {
 					id: q.id,
 					type: q.type,
+					questionUiTemplate: questionTypesMap[q.type]?.uiTemplate ?? null,
+					questionTypeTitle: questionTypesMap[q.type]?.title ?? q.type,
 					order: q.order,
 					points: q.points,
 					options: q.options,
@@ -324,6 +308,7 @@ router.get('/tests/:id', validateUUID('id'), async (req, res, next) => {
 			.from(questions)
 			.where(eq(questions.testId, test.id))
 			.orderBy(asc(questions.order))
+		const questionTypesMap = await getQuestionTypeMapForTest({ testId: test.id, includeInactive: true })
 
 		const questionsWithTexts = await Promise.all(
 			questionRows.map(async (q) => {
@@ -340,6 +325,8 @@ router.get('/tests/:id', validateUUID('id'), async (req, res, next) => {
 				return {
 					id: q.id,
 					type: q.type,
+					questionUiTemplate: questionTypesMap[q.type]?.uiTemplate ?? null,
+					questionTypeTitle: questionTypesMap[q.type]?.title ?? q.type,
 					order: q.order,
 					points: q.points,
 					options: q.options,
@@ -416,6 +403,7 @@ router.post('/tests/:id/submit', validateUUID('id'), sessionRequired(), async (r
 		if (!test) {
 			return res.status(404).json({ error: 'Test not found' })
 		}
+		const questionTypesMap = await getQuestionTypeMapForTest({ testId: test.id, includeInactive: true })
 
 		const questionRows = await db.select().from(questions).where(eq(questions.testId, test.id))
 		const questionIds = questionRows.map((q) => q.id)
@@ -445,26 +433,19 @@ router.post('/tests/:id/submit', validateUUID('id'), sessionRequired(), async (r
 		for (const q of questionRows) {
 			const correctAnswer = correctAnswersMap.get(q.id)
 			const userAnswer = userAnswers[q.id] ?? null
-			const points = Number(q.points ?? 0)
-			let isCorrect = false
+			const score = scoreQuestionByType({
+				questionType: q.type,
+				userAnswer,
+				correctAnswer,
+				fallbackMaxPoints: Number(q.points ?? 0),
+				questionTypesMap,
+			})
+			const points = score.maxPoints
+			const questionEarnedPoints = score.earnedPoints
+			const isCorrect = score.isCorrect
 
 			totalPoints += points
-
-			if (q.type === 'radio') {
-				isCorrect = typeof userAnswer === 'string' && typeof correctAnswer === 'string' && userAnswer === correctAnswer
-			} else if (q.type === 'checkbox') {
-				const normalizedUser = normalizeStringArray(userAnswer)
-				const normalizedCorrect = normalizeStringArray(correctAnswer)
-				isCorrect =
-					normalizedUser !== null &&
-					normalizedCorrect !== null &&
-					normalizedUser.join('|') === normalizedCorrect.join('|')
-			} else if (q.type === 'matching') {
-				isCorrect = isMatchingEqual(userAnswer, correctAnswer)
-			}
-
-			const questionEarnedPoints = isCorrect ? points : 0
-			if (isCorrect) earnedPoints += points
+			earnedPoints += questionEarnedPoints
 
 			const explanationCandidates = buildQuestionMarkdownCandidates({
 				storedPath: q.explanationPath,

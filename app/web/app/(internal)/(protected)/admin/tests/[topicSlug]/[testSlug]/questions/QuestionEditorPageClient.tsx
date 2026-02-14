@@ -20,7 +20,14 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 import QuestionEditor from '../../../components/QuestionEditor'
-import type { Question, TestDetailResponse, TestFormData, TestsResponse, TopicsResponse } from '../../../types'
+import type {
+	Question,
+	QuestionTypesResponse,
+	TestDetailResponse,
+	TestFormData,
+	TestsResponse,
+	TopicsResponse,
+} from '../../../types'
 import { createDefaultQuestion } from '../../../types'
 
 const fetcher = async (url: string) => {
@@ -39,24 +46,36 @@ interface Props {
 }
 
 function validateQuestion(question: Question): string | null {
+	const template =
+		question.questionUiTemplate ??
+		(question.type === 'radio'
+			? 'single_choice'
+			: question.type === 'checkbox'
+				? 'multi_choice'
+				: question.type === 'matching'
+					? 'matching'
+					: question.type === 'sequence'
+						? 'sequence_digits'
+						: 'short_text')
+
 	if (!question.promptText.trim()) {
 		return 'Введите текст вопроса'
 	}
-	if (question.type === 'radio' || question.type === 'checkbox') {
+	if (template === 'single_choice' || template === 'multi_choice') {
 		if (!question.options || question.options.length < 2) {
 			return 'Добавьте минимум 2 варианта ответа'
 		}
 		if (question.options.some((option) => !option.text.trim())) {
 			return 'Заполните все варианты ответа'
 		}
-		if (question.type === 'radio' && !question.correct) {
+		if (template === 'single_choice' && !question.correct) {
 			return 'Выберите правильный ответ'
 		}
-		if (question.type === 'checkbox' && (!Array.isArray(question.correct) || question.correct.length === 0)) {
+		if (template === 'multi_choice' && (!Array.isArray(question.correct) || question.correct.length === 0)) {
 			return 'Выберите правильные ответы'
 		}
 	}
-	if (question.type === 'matching') {
+	if (template === 'matching') {
 		if (!question.matchingPairs || question.matchingPairs.left.length < 2 || question.matchingPairs.right.length < 2) {
 			return 'Добавьте минимум 2 пары для сопоставления'
 		}
@@ -72,6 +91,16 @@ function validateQuestion(question: Question): string | null {
 			Object.keys(question.correct).length === 0
 		) {
 			return 'Укажите правильные соответствия'
+		}
+	}
+	if (template === 'short_text') {
+		if (typeof question.correct !== 'string' || !question.correct.trim()) {
+			return 'Укажите правильный краткий ответ'
+		}
+	}
+	if (template === 'sequence_digits') {
+		if (typeof question.correct !== 'string' || !/^\d+$/.test(question.correct.replace(/\s+/g, ''))) {
+			return 'Для последовательности используйте только цифры без пробелов'
 		}
 	}
 	return null
@@ -92,6 +121,10 @@ export default function QuestionEditorPageClient({ topicSlug, testSlug, question
 		isLoading,
 		mutate,
 	} = useSWR<TestDetailResponse>(`/api/tests/by-slug/${topicSlug}/${testSlug}`, fetcher)
+	const { data: questionTypesData } = useSWR<QuestionTypesResponse>(
+		testData?.test?.id ? `/api/tests/question-types?testId=${testData.test.id}&includeInactive=true` : null,
+		fetcher
+	)
 	const { data: topicsData } = useSWR<TopicsResponse>('/api/tests/topics', fetcher)
 	const { data: testsData } = useSWR<TestsResponse>('/api/tests', fetcher)
 
@@ -274,6 +307,7 @@ export default function QuestionEditorPageClient({ topicSlug, testSlug, question
 		<div className={saving ? 'pointer-events-none opacity-80' : undefined}>
 			<QuestionEditor
 				question={currentQuestion}
+				questionTypes={questionTypesData?.questionTypes ?? []}
 				onSave={handleSaveQuestion}
 				onCancel={backToTestEditor}
 				headerActions={

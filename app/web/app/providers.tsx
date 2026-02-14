@@ -19,6 +19,7 @@ export function Providers({ children, themeProps }: ProvidersProps) {
 	useEffect(() => {
 		// При заходе на сайт всегда ставим светлую тему
 		setTheme('light')
+		localStorage.setItem('theme', 'light')
 	}, [setTheme])
 
 	return (

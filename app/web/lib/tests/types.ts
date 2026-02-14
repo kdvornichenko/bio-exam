@@ -1,4 +1,5 @@
-export type TestQuestionType = 'radio' | 'checkbox' | 'matching'
+export type TestQuestionType = string
+export type QuestionUiTemplate = 'single_choice' | 'multi_choice' | 'matching' | 'short_text' | 'sequence_digits'
 
 export type TestOption = {
 	id: string
@@ -39,6 +40,8 @@ export type PublicTestDetail = {
 export type PublicTestQuestion = {
 	id: string
 	type: TestQuestionType
+	questionUiTemplate: QuestionUiTemplate | null
+	questionTypeTitle: string
 	order: number
 	points: number
 	options: TestOption[] | null

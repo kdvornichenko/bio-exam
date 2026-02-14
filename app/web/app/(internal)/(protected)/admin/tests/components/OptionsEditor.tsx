@@ -8,18 +8,18 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 
-import type { Option, QuestionType } from '../types'
+import type { Option } from '../types'
 import { generateId } from '../types'
 
 interface Props {
-	type: QuestionType
+	mode: 'single' | 'multi'
 	options: Option[]
 	correct: string | string[] | Record<string, string>
 	onChange: (options: Option[], correct: string | string[] | Record<string, string>) => void
 }
 
-export default function OptionsEditor({ type, options, correct, onChange }: Props) {
-	const isRadio = type === 'radio'
+export default function OptionsEditor({ mode, options, correct, onChange }: Props) {
+	const isRadio = mode === 'single'
 	const selectedIds = isRadio ? [correct as string] : Array.isArray(correct) ? correct : []
 
 	const handleAddOption = () => {

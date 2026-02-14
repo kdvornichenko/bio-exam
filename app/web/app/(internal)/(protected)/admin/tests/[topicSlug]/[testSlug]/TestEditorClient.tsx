@@ -221,11 +221,22 @@ export default function TestEditorClient({ topicSlug, testSlug }: Props) {
 		// Validate questions
 		for (let i = 0; i < form.questions.length; i++) {
 			const q = form.questions[i]
+			const template =
+				q.questionUiTemplate ??
+				(q.type === 'radio'
+					? 'single_choice'
+					: q.type === 'checkbox'
+						? 'multi_choice'
+						: q.type === 'matching'
+							? 'matching'
+							: q.type === 'sequence'
+								? 'sequence_digits'
+								: 'short_text')
 			if (!q.promptText.trim()) {
 				toast.error(`Вопрос ${i + 1}: введите текст вопроса`)
 				return
 			}
-			if (q.type === 'radio' || q.type === 'checkbox') {
+			if (template === 'single_choice' || template === 'multi_choice') {
 				if (!q.options || q.options.length < 2) {
 					toast.error(`Вопрос ${i + 1}: добавьте минимум 2 варианта ответа`)
 					return
@@ -234,16 +245,16 @@ export default function TestEditorClient({ topicSlug, testSlug }: Props) {
 					toast.error(`Вопрос ${i + 1}: заполните все варианты ответа`)
 					return
 				}
-				if (q.type === 'radio' && !q.correct) {
+				if (template === 'single_choice' && !q.correct) {
 					toast.error(`Вопрос ${i + 1}: выберите правильный ответ`)
 					return
 				}
-				if (q.type === 'checkbox' && (!Array.isArray(q.correct) || q.correct.length === 0)) {
+				if (template === 'multi_choice' && (!Array.isArray(q.correct) || q.correct.length === 0)) {
 					toast.error(`Вопрос ${i + 1}: выберите правильные ответы`)
 					return
 				}
 			}
-			if (q.type === 'matching') {
+			if (template === 'matching') {
 				if (!q.matchingPairs || q.matchingPairs.left.length < 2 || q.matchingPairs.right.length < 2) {
 					toast.error(`Вопрос ${i + 1}: добавьте минимум 2 пары для сопоставления`)
 					return
@@ -254,6 +265,18 @@ export default function TestEditorClient({ topicSlug, testSlug }: Props) {
 				}
 				if (typeof q.correct !== 'object' || Array.isArray(q.correct) || Object.keys(q.correct).length === 0) {
 					toast.error(`Вопрос ${i + 1}: укажите правильные соответствия`)
+					return
+				}
+			}
+			if (template === 'short_text') {
+				if (typeof q.correct !== 'string' || !q.correct.trim()) {
+					toast.error(`Вопрос ${i + 1}: укажите правильный краткий ответ`)
+					return
+				}
+			}
+			if (template === 'sequence_digits') {
+				if (typeof q.correct !== 'string' || !/^\d+$/.test(q.correct.replace(/\s+/g, ''))) {
+					toast.error(`Вопрос ${i + 1}: для последовательности используйте только цифры`)
 					return
 				}
 			}
@@ -491,6 +514,26 @@ export default function TestEditorClient({ topicSlug, testSlug }: Props) {
 								}
 								placeholder="Не задан"
 							/>
+						</div>
+
+						<div className="space-y-3">
+							<Label>Начисление баллов</Label>
+							{!isNew && topicSlug && testSlug ? (
+								<div className="space-y-2">
+									<Button variant="outline" asChild className="w-full">
+										<Link href={`/admin/tests/scoring?scope=test&topicSlug=${topicSlug}&testSlug=${testSlug}`}>
+											Настроить баллы для этого теста
+										</Link>
+									</Button>
+									<Button variant="outline" asChild className="w-full">
+										<Link href="/admin/tests/question-types">Настроить типы вопросов</Link>
+									</Button>
+								</div>
+							) : (
+								<p className="text-muted-foreground text-sm">
+									Сохраните тест, чтобы настроить баллы для него отдельно.
+								</p>
+							)}
 						</div>
 
 						<div className="flex items-center justify-between pt-2">

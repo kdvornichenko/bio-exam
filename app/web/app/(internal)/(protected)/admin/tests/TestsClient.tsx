@@ -2,7 +2,19 @@
 
 import { useCallback, useState } from 'react'
 
-import { BookOpen, ChevronRight, Download, Edit, EyeOff, FolderPlus, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
+import {
+	BookOpen,
+	ChevronRight,
+	Download,
+	Edit,
+	EyeOff,
+	FolderPlus,
+	MoreHorizontal,
+	Plus,
+	Shapes,
+	SlidersHorizontal,
+	Trash2,
+} from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
@@ -232,6 +244,18 @@ export default function TestsClient() {
 					<p className="text-muted-foreground">Создание и редактирование тестов</p>
 				</div>
 				<div className="flex gap-2">
+					<Button variant="outline" asChild>
+						<Link href="/admin/tests/scoring">
+							<SlidersHorizontal className="mr-2 h-4 w-4" />
+							Настройка баллов
+						</Link>
+					</Button>
+					<Button variant="outline" asChild>
+						<Link href="/admin/tests/question-types">
+							<Shapes className="mr-2 h-4 w-4" />
+							Типы вопросов
+						</Link>
+					</Button>
 					<Button variant="outline" onClick={handleCreateTopic}>
 						<FolderPlus className="mr-2 h-4 w-4" />
 						Новая тема
